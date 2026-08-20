@@ -42,10 +42,16 @@ MarketSource = Literal["okx", "binance", "bybit", "gate"]
 
 ALLOWED_LEVERAGE = {5, 10}
 MIN_MARGIN = 1.0
-MAX_MARGIN = 100.0
 DEFAULT_MARGIN = 50.0
 DEFAULT_LEVERAGE = 5
 DEFAULT_MARGIN_MODE: MarginMode = "isolated"
+
+@dataclass(slots=True)
+class SessionRiskPolicy:
+    max_margin_per_position: float = 10000.0
+    max_open_margin: float = 50000.0
+    max_open_notional: float = 500000.0
+    max_positions: int = 10
 
 BINANCE_FAPI = "https://fapi.binance.com"
 EPSILON = 1e-9
@@ -233,8 +239,8 @@ class RiskConfig:
             )
         if self.leverage not in ALLOWED_LEVERAGE:
             raise ValueError(f"leverage must be one of {sorted(ALLOWED_LEVERAGE)}")
-        if not MIN_MARGIN <= self.margin <= MAX_MARGIN:
-            raise ValueError(f"margin must be between ${MIN_MARGIN:.0f} and ${MAX_MARGIN:.0f}")
+        if self.margin < MIN_MARGIN:
+            raise ValueError(f"margin must be at least ${MIN_MARGIN:.0f}")
         if self.take_profit_pct <= 0 or self.stop_loss_pct <= 0:
             raise ValueError("take_profit_pct and stop_loss_pct must be positive")
         if self.trailing_stop_pct is not None and self.trailing_stop_pct <= 0:

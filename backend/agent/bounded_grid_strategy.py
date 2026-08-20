@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 Action = Literal["OPEN_LONG", "OPEN_SHORT"]
@@ -94,6 +95,11 @@ class GridIntent:
     take_profit_bps: float
     stop_loss_bps: float
     reason: str
+    strategy_version: str
+    config_hash: str
+    market_source: str
+    signal_mark: float
+    signal_observed_at: str
 
 
 class BoundedGridStrategy:
@@ -145,7 +151,14 @@ class BoundedGridStrategy:
             if trade_id not in open_trade_ids:
                 del self.occupied[level_id]
 
-    def on_price_tick(self, mark_price: float, open_trade_ids: set[str]) -> list[GridIntent]:
+    def on_price_tick(
+        self,
+        mark_price: float,
+        open_trade_ids: set[str],
+        *,
+        market_source: str = "unknown",
+        observed_at: Optional[str] = None,
+    ) -> list[GridIntent]:
         if mark_price <= 0:
             raise ValueError(f"invalid mark price {mark_price!r}")
         self.reconcile_open_trade_ids(open_trade_ids)
@@ -164,6 +177,9 @@ class BoundedGridStrategy:
         level_notional = self.config.margin_per_level * self.config.leverage
         current_notional = len(self.occupied) * level_notional
         intents: list[GridIntent] = []
+
+        cfg_h = config_hash(self.config)
+        observed_str = observed_at if observed_at is not None else datetime.now(timezone.utc).isoformat()
 
         for level in self._levels():
             if len(self.occupied) + len(intents) >= self.config.max_open_levels:
@@ -188,6 +204,11 @@ class BoundedGridStrategy:
                 take_profit_bps=self.config.take_profit_bps,
                 stop_loss_bps=self.config.stop_loss_bps,
                 reason=f"bounded_grid:{level_id}@{level.trigger_price:.6f}",
+                strategy_version=self.version,
+                config_hash=cfg_h,
+                market_source=market_source,
+                signal_mark=mark_price,
+                signal_observed_at=observed_str,
             ))
         return intents
 

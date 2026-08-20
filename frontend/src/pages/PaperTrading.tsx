@@ -596,27 +596,29 @@ export interface RiskAdjustedMetrics {
 
 export function computeRiskAdjustedMetrics(s: PaperSessionSummary): RiskAdjustedMetrics {
   const overall = s.trade_stats?.overall;
+  const analytics = s.analytics;
   const pnlPct = finiteNumber(s.latest_mark?.pnl_pct);
   const maxDd = finiteNumber(s.max_drawdown);
   const calmarRatio = pnlPct != null && maxDd != null && maxDd > 0 ? Number((pnlPct / maxDd).toFixed(2)) : null;
 
-  if (overall?.sharpe_ratio != null && overall?.sortino_ratio != null) {
-    const sharpe = overall.sharpe_ratio;
-    const sortino = overall.sortino_ratio;
-    const annualVol = overall.annualized_volatility ?? 0.184;
-    const downsideVol = overall.downside_deviation ?? 0.012;
+  const overallSharpe = analytics?.SharpeRatio ?? overall?.sharpe_ratio;
+  const overallSortino = analytics?.SortinoRatio ?? overall?.sortino_ratio;
+
+  if (overallSharpe != null && overallSortino != null) {
+    const annualVol = overall?.annualized_volatility ?? 0.184;
+    const downsideVol = overall?.downside_deviation ?? 0.012;
     const upsideVol = annualVol > downsideVol ? Math.sqrt(Math.max(0, Math.pow(annualVol, 2) - Math.pow(downsideVol, 2))) : annualVol;
     const ratio = downsideVol > 0 ? Number((upsideVol / downsideVol).toFixed(2)) : null;
 
-    const sharpeRating = sharpe >= 3.0 ? "Exceptional (>3.0)" : sharpe >= 2.0 ? "Very Good (2.0-3.0)" : sharpe >= 1.0 ? "Good (1.0-2.0)" : "Suboptimal (<1.0)";
-    const sortinoRating = sortino >= 3.5 ? "Exceptional Asymmetry" : sortino >= 2.5 ? "Strong Positive Skew" : sortino >= 1.2 ? "Balanced" : "Downside Heavy";
-    const sharpeColor = sharpe >= 2.0 ? "text-emerald-400" : sharpe >= 1.0 ? "text-sky-400" : "text-amber-400";
-    const sortinoColor = sortino >= 2.5 ? "text-emerald-400" : sortino >= 1.5 ? "text-sky-400" : "text-amber-400";
+    const sharpeRating = overallSharpe >= 3.0 ? "Exceptional (>3.0)" : overallSharpe >= 2.0 ? "Very Good (2.0-3.0)" : overallSharpe >= 1.0 ? "Good (1.0-2.0)" : "Suboptimal (<1.0)";
+    const sortinoRating = overallSortino >= 3.5 ? "Exceptional Asymmetry" : overallSortino >= 2.5 ? "Strong Positive Skew" : overallSortino >= 1.2 ? "Balanced" : "Downside Heavy";
+    const sharpeColor = overallSharpe >= 2.0 ? "text-emerald-400" : overallSharpe >= 1.0 ? "text-sky-400" : "text-amber-400";
+    const sortinoColor = overallSortino >= 2.5 ? "text-emerald-400" : overallSortino >= 1.5 ? "text-sky-400" : "text-amber-400";
 
     return {
-      sharpe,
-      sortino,
-      calmar: overall.calmar_ratio ?? calmarRatio,
+      sharpe: overallSharpe,
+      sortino: overallSortino,
+      calmar: analytics?.["Session Return / Max Drawdown"] ?? overall?.calmar_ratio ?? calmarRatio,
       annualVol,
       downsideVol,
       upsideVol,
@@ -625,8 +627,8 @@ export function computeRiskAdjustedMetrics(s: PaperSessionSummary): RiskAdjusted
       sortinoRating,
       sharpeColor,
       sortinoColor,
-      sharpeScorePct: Math.min(100, Math.max(0, Math.round((sharpe / 3.5) * 100))),
-      sortinoScorePct: Math.min(100, Math.max(0, Math.round((sortino / 4.5) * 100))),
+      sharpeScorePct: Math.min(100, Math.max(0, Math.round((overallSharpe / 3.5) * 100))),
+      sortinoScorePct: Math.min(100, Math.max(0, Math.round((overallSortino / 4.5) * 100))),
       sampleCount: s.trade_count || 24,
     };
   }
@@ -875,17 +877,17 @@ const RiskAdjustedSection: React.FC<{
           </div>
         </div>
 
-        {/* Calmar Ratio & Drawdown Efficiency Card */}
+        {/* Session Return / Max Drawdown & Tail Risk Card */}
         <div className="rounded-xl border border-gray-800/90 bg-gray-950/60 p-4 transition-all hover:border-gray-700">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Calmar & Tail Risk</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Return / Max Drawdown</span>
             <span className="text-xs text-gray-500">Return / MaxDD</span>
           </div>
           <div className="mt-3 flex items-baseline gap-2">
             <span className="text-3xl font-extrabold text-white">
               {metrics.calmar != null ? `${metrics.calmar.toFixed(2)}x` : "—"}
             </span>
-            <span className="text-xs text-gray-500">Calmar Ratio</span>
+            <span className="text-xs text-gray-500">Session Return / Max Drawdown</span>
           </div>
           <div className="mt-3 flex flex-col gap-2">
             <div className="flex items-center justify-between text-xs">
@@ -1484,38 +1486,38 @@ export function PaperTrading() {
   const selectedHeartbeatAgeMs = Number.isFinite(selectedHeartbeatMs) ? Math.max(0, nowMs - selectedHeartbeatMs) : null;
   const selectedHeartbeatFresh = selectedHeartbeatAgeMs !== null && selectedHeartbeatAgeMs <= HEARTBEAT_STALE_AFTER_MS;
 
-  const initialCapital = finiteNumber(account?.initial_capital ?? s.session.initial_cash);
-  const equity = finiteNumber(account?.current_equity ?? latest?.equity);
-  const pnl = finiteNumber(latest?.pnl)
-    ?? (equity != null && initialCapital != null ? equity - initialCapital : null);
+  const snapAccount = s.account;
+  const initialCapital = finiteNumber(snapAccount?.initialCapital ?? account?.initial_capital ?? s.session.initial_cash);
+  const equity = finiteNumber(snapAccount?.equity ?? account?.current_equity ?? latest?.equity);
+  const pnl = snapAccount != null
+    ? (snapAccount.equity - snapAccount.initialCapital)
+    : (finiteNumber(latest?.pnl) ?? (equity != null && initialCapital != null ? equity - initialCapital : null));
   // FuturesPaperEngine persists pnl_pct as a percentage (for example 0.053),
   // while pctSigned expects a fractional value (0.00053). Normalize only the
   // persisted mark; the fallback is already a fraction.
   const persistedPnlPct = finiteNumber(latest?.pnl_pct);
-  const pnlPct = persistedPnlPct != null
-    ? persistedPnlPct / 100
-    : (pnl != null && initialCapital != null && initialCapital !== 0 ? pnl / initialCapital : null);
+  const pnlPct = snapAccount != null
+    ? (snapAccount.initialCapital !== 0 ? (snapAccount.equity - snapAccount.initialCapital) / snapAccount.initialCapital : 0)
+    : (persistedPnlPct != null ? persistedPnlPct / 100 : (pnl != null && initialCapital != null && initialCapital !== 0 ? pnl / initialCapital : null));
 
   const accountCash = finiteNumber(account?.cash_available);
   const accountMargin = finiteNumber(account?.margin_used);
   const latestWallet = finiteNumber(latest?.wallet_balance);
-  const walletBalance = latestWallet
-    ?? (accountCash != null && accountMargin != null ? accountCash + accountMargin : null);
-  const availableBalance = finiteNumber(account?.cash_available ?? latest?.available_balance ?? s.book?.cash_remaining);
-  const reservedMargin = finiteNumber(account?.margin_used ?? latest?.reserved_margin);
+  const walletBalance = finiteNumber(snapAccount?.walletBalance ?? latestWallet ?? (accountCash != null && accountMargin != null ? accountCash + accountMargin : null));
+  const availableBalance = finiteNumber(snapAccount?.availableBalance ?? account?.cash_available ?? latest?.available_balance ?? s.book?.cash_remaining);
+  const reservedMargin = finiteNumber(snapAccount?.reservedMargin ?? account?.margin_used ?? latest?.reserved_margin);
 
   const livePositionValues = Object.values(latest?.position_values ?? {})
     .map((value) => finiteNumber(value))
     .filter((value): value is number => value !== null);
-  const openNotional = finiteNumber(latest?.open_notional)
-    ?? (livePositionValues.length > 0 ? livePositionValues.reduce((sum, value) => sum + Math.abs(value), 0) : null);
+  const openNotional = finiteNumber(snapAccount?.openNotional ?? latest?.open_notional ?? (livePositionValues.length > 0 ? livePositionValues.reduce((sum, value) => sum + Math.abs(value), 0) : null));
 
-  const unrealizedPnl = finiteNumber(account?.unrealized_pnl ?? latest?.unrealized_pnl);
-  const realizedPnl = finiteNumber(account?.realized_pnl ?? overall?.realized_pnl);
-  const feesPaid = finiteNumber(account?.fees ?? overall?.fees_paid);
+  const unrealizedPnl = finiteNumber(snapAccount?.unrealizedPnl ?? account?.unrealized_pnl ?? latest?.unrealized_pnl);
+  const realizedPnl = finiteNumber(snapAccount?.realizedPnl ?? account?.realized_pnl ?? overall?.realized_pnl);
+  const feesPaid = finiteNumber(snapAccount?.feesPaid ?? account?.fees ?? overall?.fees_paid);
   const accountFunding = finiteNumber(account?.funding_pnl);
   const latestFundingPaid = finiteNumber(latest?.funding_paid);
-  const fundingPnl = accountFunding ?? (latestFundingPaid != null ? -latestFundingPaid : null);
+  const fundingPnl = finiteNumber(snapAccount?.fundingPnl ?? accountFunding ?? (latestFundingPaid != null ? -latestFundingPaid : null));
 
   const configuredLeverage = account?.leverage ?? s.session.risk_config?.leverage;
   const isLeveraged = isAllowedLeverage(configuredLeverage);
@@ -1540,7 +1542,7 @@ export function PaperTrading() {
     { label: "Profit Factor", value: overall?.profit_factor != null ? overall.profit_factor.toFixed(2) : "—", color: overall?.profit_factor != null && overall.profit_factor >= 1 ? "text-emerald-400" : "text-red-400" },
     { label: "Sharpe Ratio", value: currentRiskMetrics.sharpe != null ? currentRiskMetrics.sharpe.toFixed(2) : "—", color: currentRiskMetrics.sharpeColor },
     { label: "Sortino Ratio", value: currentRiskMetrics.sortino != null ? currentRiskMetrics.sortino.toFixed(2) : "—", color: currentRiskMetrics.sortinoColor },
-    { label: "Calmar Ratio", value: currentRiskMetrics.calmar != null ? `${currentRiskMetrics.calmar.toFixed(2)}x` : "—", color: "text-sky-400" },
+    { label: "Session Return / Max Drawdown", value: currentRiskMetrics.calmar != null ? `${currentRiskMetrics.calmar.toFixed(2)}x` : "—", color: "text-sky-400" },
     { label: "Total Net P&L", value: signedMoneyOrDash(realizedPnl), color: valueColor(realizedPnl) },
     { label: "Average Win", value: overall?.avg_win != null ? usd(overall.avg_win) : "—", color: "text-emerald-400" },
     { label: "Average Loss", value: overall?.avg_loss != null ? `-${usd(overall.avg_loss)}` : "—", color: "text-red-400" },

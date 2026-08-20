@@ -12,7 +12,13 @@ from uuid import uuid4
 
 import psycopg
 
-from positions_reconciliation import reconcile_positions, validate_position_snapshot
+# pyrefly: ignore [missing-import]
+try:
+    # pyrefly: ignore [missing-import]
+    from positions_reconciliation import reconcile_positions, validate_position_snapshot
+except (ImportError, ValueError):
+    # pyrefly: ignore [missing-import]
+    from positions_reconciliation import reconcile_positions, validate_position_snapshot
 
 ALLOWED_LEVERAGE = {5, 10}
 
@@ -77,6 +83,9 @@ class PaperPostgres:
 
     def _verify_account(self) -> None:
         with self._connect() as connection, connection.cursor() as cursor:
+            # Ensure last_txn_id column exists
+            cursor.execute("ALTER TABLE paper_trading.trading_accounts ADD COLUMN IF NOT EXISTS last_txn_id TEXT;")
+
             cursor.execute(
                 """SELECT strategy_id, worker_id, timeframe, mode, leverage
                    FROM paper_trading.trading_accounts WHERE account_id = %s""",
@@ -89,8 +98,8 @@ class PaperPostgres:
             )
             if row is None:
                 raise RuntimeError(f"paper account {self.identity.account_id} is not provisioned")
-            if tuple(row) != expected:
-                raise RuntimeError(f"database identity {tuple(row)!r} does not match worker {expected!r}")
+            if tuple(row[:5]) != expected:
+                raise RuntimeError(f"database identity {tuple(row[:5])!r} does not match worker {expected!r}")
 
     def sync_tick(
         self,
@@ -103,6 +112,7 @@ class PaperPostgres:
         market_data_source: str = "unknown",
         market_data_fresh: bool = False,
         cycle_diagnostics: dict[str, Any] | None = None,
+        txn_id: str | None = None,
     ) -> None:
         """Atomically publish only this account's current state and heartbeat."""
         ident = self.identity
@@ -117,12 +127,13 @@ class PaperPostgres:
                 """UPDATE paper_trading.trading_accounts
                    SET cash_balance=%s, margin_used=%s, realized_pnl=%s,
                        unrealized_pnl=%s, funding_pnl=%s, fees=%s,
-                       current_equity=%s, ledger_status='OK', updated_at=%s
+                       current_equity=%s, ledger_status='OK', updated_at=%s,
+                       last_txn_id=%s
                    WHERE account_id=%s AND worker_id=%s AND mode=%s""",
                 (state.available_balance, state.reserved_margin, state.realized_gross_pnl,
                  snapshot.get("unrealized_pnl", 0), -state.total_funding,
                  state.total_fees + state.total_liquidation_fees,
-                 snapshot["current_equity"], now,
+                 snapshot["current_equity"], now, txn_id,
                  ident.account_id, ident.worker_id, ident.mode),
             )
             if cursor.rowcount != 1:
@@ -260,6 +271,16 @@ class PaperPostgres:
             )
             executions = execution_events or []
             diagnostics = cycle_diagnostics or {}
+
+            resolved_txn_uuid = None
+            if txn_id:
+                try:
+                    resolved_txn_uuid = UUID(txn_id)
+                except ValueError:
+                    pass
+            if not resolved_txn_uuid:
+                resolved_txn_uuid = uuid4()
+
             cursor.execute(
                 """INSERT INTO paper_trading.paper_cycle_events
                    (id,account_id,worker_id,strategy_id,timeframe,cycle_started_at,cycle_completed_at,
@@ -268,7 +289,7 @@ class PaperPostgres:
                     signal_score,entry_threshold,market_data_age,volatility,spread,risk_rejection_reason,
                     strategy_rejection_reason,order_rejection_reason,decision_funnel)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,true,'COMPLETED',%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)""",
-                (uuid4(), ident.account_id, ident.worker_id, ident.strategy_id, ident.timeframe,
+                (resolved_txn_uuid, ident.account_id, ident.worker_id, ident.strategy_id, ident.timeframe,
                  cycle_started_at or now, now, market_data_source, market_data_fresh,
                  sum(1 for e in executions if e.get("event") == "position_opened"),
                  sum(1 for e in executions if e.get("event") == "position_opened"),

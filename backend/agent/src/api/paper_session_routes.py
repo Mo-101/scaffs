@@ -360,22 +360,45 @@ def _futures_trade_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
         "avg_win": (gross_win / len(wins)) if wins else None,
         "avg_loss": (gross_loss / len(losses)) if losses else None,
-    }
     by_symbol: dict[str, list[dict[str, Any]]] = {}
     for t in trades:
         by_symbol.setdefault(t["symbol"], []).append(t)
     return {"overall": overall, "by_symbol": by_symbol}
 
 
+def compute_five_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    if not trades:
+        return {
+            "TotalNet": 0.0,
+            "WinRate": None,
+            "AvgWin": None,
+            "AvgLoss": None,
+            "ProfitFactor": None,
+        }
+    wins = [float(t.get("net_pnl", 0.0)) for t in trades if float(t.get("net_pnl", 0.0)) > 0]
+    losses = [float(t.get("net_pnl", 0.0)) for t in trades if float(t.get("net_pnl", 0.0)) < 0]
+
+    total_net = sum(float(t.get("net_pnl", 0.0)) for t in trades)
+    win_rate = len(wins) / len(trades) if trades else 0.0
+    avg_win = (sum(wins) / len(wins)) if wins else None
+    avg_loss = (sum(losses) / len(losses)) if losses else None
+
+    gross_win = sum(wins)
+    gross_loss = sum(abs(l) for l in losses)
+    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
+
+    return {
+        "TotalNet": total_net,
+        "WinRate": win_rate,
+        "AvgWin": avg_win,
+        "AvgLoss": avg_loss,
+        "ProfitFactor": profit_factor,
+    }
+
+
 def _load_futures_paper_session(session_dir: Path, classification: str = "unknown") -> dict[str, Any]:
     """Normalize a FuturesPaperEngine session into the same response shape
     _summarize() produces for a paper_session.py session.
-
-    Never infers a position, trade, or equity value from session_config.json
-    -- configuration describes what an account *would* trade with, not what
-    it has done. An account with no account.json/marks.jsonl yet (created
-    but never launched, e.g. grid_futures_10x_v2 today) reports empty
-    positions, zero trades, and runtime_status "not_started".
     """
     config = json.loads((session_dir / "session_config.json").read_text(encoding="utf-8"))
 
@@ -421,6 +444,7 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         equity_curve.append({"time": m["timestamp"], "equity": e, "drawdown": drawdown})
 
     trade_stats = _futures_trade_stats(trades)
+    five_stats = compute_five_stats(trades)
 
     never_launched = not marks and (state is None or state.get("opened_trades", 0) == 0)
     if never_launched:
@@ -441,10 +465,6 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
     account_id = str(config.get("account_id", session_dir.name))
     database_account = _postgres_account_view(account_id)
     if database_account is None:
-        # The dashboard commonly runs in Docker while the isolated paper
-        # workers and PostgreSQL run on the host.  Session files are bind
-        # mounted, so preserve useful liveness/account telemetry even when
-        # that container cannot open the host-only database socket.
         heartbeat_path = session_dir / ".heartbeat"
         try:
             last_heartbeat = heartbeat_path.read_text(encoding="utf-8").strip() or None
@@ -463,10 +483,10 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
             "margin_used": (state or {}).get("reserved_margin", 0.0),
             "realized_pnl": (state or {}).get("realized_net_pnl", 0.0),
             "unrealized_pnl": (latest or {}).get("unrealized_pnl", 0.0),
-            "funding_pnl": -(state or {}).get("funding_paid", 0.0),
-            "fees": (state or {}).get("fees_paid", 0.0),
+            "funding_pnl": -(state or {}).get("total_funding", 0.0),
+            "fees": (state or {}).get("total_fees", 0.0) + (state or {}).get("total_liquidation_fees", 0.0),
             "current_equity": equity,
-            "ledger_status": "OK",
+            "ledger_status": (state or {}).get("status", "OK"),
             "last_heartbeat": last_heartbeat,
             "last_trade": trades[-1].get("exit_time") if trades else None,
             "risk_state": {},
@@ -475,8 +495,6 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
             "last_cycle_completed_at": (latest or {}).get("timestamp"),
             "telemetry_source": "session_files",
         }
-    # A strategy may intentionally mark at 10m/15m intervals. Its database
-    # heartbeat is the liveness authority between marks, not the mark age.
     if database_account and database_account.get("last_heartbeat"):
         try:
             heartbeat_at = datetime.fromisoformat(database_account["last_heartbeat"])
@@ -485,6 +503,7 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
                 status = "running"
         except (TypeError, ValueError):
             pass
+
     session_view = {
         "strategy_type": config.get("strategy_type", "futures_paper_engine"),
         "account_id": account_id,
@@ -493,7 +512,7 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         "timeframe": database_account.get("timeframe") if database_account else None,
         "symbols": symbols,
         "initial_cash": initial_cash,
-        "accounting_status": "OK",
+        "accounting_status": (state or {}).get("status", "OK"),
         "accounting_schema_version": (state or {}).get("schema_version", 1),
         "risk_config": {
             "leverage": config.get("leverage"),
@@ -503,7 +522,93 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         "config_status": config.get("status"),
     }
 
+    from paper_runtime.metrics import compute_risk_metrics
+    equity_points = []
+    for m in marks:
+        equity_points.append({
+            "timestamp": m["timestamp"],
+            "equity": float(m.get("current_equity", m.get("equity", 0.0)))
+        })
+    risk_metrics = compute_risk_metrics(equity_points)
+
+    snapshot_id = f"snap_{session_dir.name}_{len(marks)}"
+    txn_id = (state or {}).get("last_txn_id")
+    if not txn_id and state and state.get("committed_txn_ids"):
+        txn_id = state["committed_txn_ids"][-1]
+    if not txn_id:
+        import uuid
+        txn_id = uuid.uuid4().hex[:16]
+
+    observed_at = (state or {}).get("updated_at") or (latest["timestamp"] if latest else datetime.now(timezone.utc).isoformat())
+    market_source = (latest or {}).get("market_data_source") or database_account.get("market_data_source") or "binance"
+
+    wallet_balance = float((state or {}).get("wallet_balance", initial_cash))
+    reserved_margin = float((state or {}).get("reserved_margin", 0.0))
+    available_balance = wallet_balance - reserved_margin
+    open_notional = float((state or {}).get("open_notional", 0.0))
+    realized_pnl = float((state or {}).get("realized_net_pnl", 0.0))
+    fees_paid = float((state or {}).get("total_fees", 0.0)) + float((state or {}).get("total_liquidation_fees", 0.0))
+    funding_pnl = -float((state or {}).get("total_funding", 0.0))
+
+    unrealized_pnl = 0.0
+    if state and state.get("positions"):
+        for pos in state["positions"].values():
+            m_price = 0.0
+            if latest and latest.get("prices"):
+                m_price = float(latest["prices"].get(pos["symbol"], 0.0))
+            if m_price <= 0:
+                m_price = float(pos.get("entry_price", 0.0))
+            direction = 1 if pos.get("side") == "long" else -1
+            pnl_gross = float(pos.get("quantity", 0.0)) * (m_price - float(pos.get("entry_price", 0.0))) * direction
+            unrealized_pnl += pnl_gross
+
+    equity = wallet_balance + unrealized_pnl
+
+    account_envelope = {
+        "initialCapital": initial_cash,
+        "walletBalance": wallet_balance,
+        "reservedMargin": reserved_margin,
+        "availableBalance": available_balance,
+        "equity": equity,
+        "openNotional": open_notional,
+        "realizedPnl": realized_pnl,
+        "unrealizedPnl": unrealized_pnl,
+        "feesPaid": fees_paid,
+        "fundingPnl": funding_pnl,
+    }
+
+    positions_envelope = list((state or {}).get("positions", {}).values())
+
+    analytics_envelope = {
+        "TotalNet": five_stats["TotalNet"],
+        "WinRate": five_stats["WinRate"],
+        "AvgWin": five_stats["AvgWin"],
+        "AvgLoss": five_stats["AvgLoss"],
+        "ProfitFactor": five_stats["ProfitFactor"],
+        "SharpeRatio": risk_metrics.sharpe,
+        "SortinoRatio": risk_metrics.sortino,
+        "Session Return / Max Drawdown": risk_metrics.calmar,
+        "max_drawdown": risk_metrics.max_drawdown,
+        "recent_trades": trades[-50:],
+    }
+
+    health_envelope = {
+        "status": (state or {}).get("status", "OK"),
+        "runtime_status": runtime_status,
+        "active": runtime_status == "running",
+    }
+
     return {
+        "snapshot_id": snapshot_id,
+        "txn_id": txn_id,
+        "observed_at": observed_at,
+        "market_source": market_source,
+        "account": account_envelope,
+        "positions": positions_envelope,
+        "marks": marks,
+        "analytics": analytics_envelope,
+        "health": health_envelope,
+        
         "session_id": session_dir.name,
         "session": session_view,
         "book": book,
@@ -517,15 +622,9 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         "equity": equity,
         "pnl": pnl,
         "return_pct": return_pct,
-        "tampered": False,
         "classification": classification,
         "status": status,
         "runtime_status": runtime_status,
-        "analysis_status": "valid",
-        "accounting_status": "OK",
-        "accounting_schema_version": (state or {}).get("schema_version", 1),
-        "session_role": None,
-        "regimen": None,
         "active": runtime_status == "running",
         "database_account": database_account,
     }
@@ -535,6 +634,13 @@ def register_paper_session_routes(
     app: FastAPI,
     require_auth: Optional[AuthDep] = None,
 ) -> None:
+    # Trigger legacy state migration for all sessions on startup
+    try:
+        from migration import migrate_all_sessions
+        migrate_all_sessions(PAPER_SESSIONS_DIR)
+    except Exception as e:
+        print(f"Failed to run legacy session migrations: {e}")
+
     auth_dependencies = [Depends(require_auth)] if require_auth is not None else []
 
     @app.get("/paper-trading/notifications", dependencies=auth_dependencies)

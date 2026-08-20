@@ -117,7 +117,7 @@ export const MorningGloryOptimizer: React.FC<MorningGloryOptimizerProps> = ({ se
               +{aprYield.toFixed(1)}% APR
             </div>
           </div>
-          <span className="text-xs text-gray-500">Delta Neutral</span>
+          <span className="text-xs text-gray-500">Funding Arbitrage</span>
         </div>
       </div>
 

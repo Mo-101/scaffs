@@ -25,14 +25,17 @@ Guarantees enforced here:
 
 from __future__ import annotations
 
+try:
+    from .futures_paper_engine import FuturesPaperEngine, Position, RiskConfig, normalize_symbol
+except (ImportError, ValueError):
+    from futures_paper_engine import FuturesPaperEngine, Position, RiskConfig, normalize_symbol
+
 import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
-
-from futures_paper_engine import FuturesPaperEngine, RiskConfig, normalize_symbol
 
 Action = Literal["OPEN_LONG", "OPEN_SHORT", "CLOSE"]
 
@@ -120,7 +123,6 @@ class ManyBotsFuturesAdapter:
     def __init__(
         self,
         engine: FuturesPaperEngine,
-        *,
         account_id: str,
         universe_path: str | Path,
         leverage: int,
@@ -188,7 +190,14 @@ class ManyBotsFuturesAdapter:
             config_hash=self._config_hash,
         )
 
-    def apply_intent(self, intent: FuturesIntent, *, price: Optional[float] = None) -> Optional[str]:
+    def apply_intent(
+        self,
+        intent: FuturesIntent,
+        *,
+        price: Optional[float] = None,
+        market_source: Optional[str] = None,
+        observed_at: Optional[str] = None,
+    ) -> Optional[str]:
         """Executes an intent against the engine. Returns the trade_id opened,
         or None if the intent was a no-op (duplicate, symbol not frozen,
         or a position already open on that symbol for an OPEN_* action).
@@ -213,7 +222,13 @@ class ManyBotsFuturesAdapter:
             if existing_trade_id is None:
                 self._mark_processed(intent)
                 return None
-            self.engine.close_position(existing_trade_id, price=price, exit_reason=intent.reason)
+            self.engine.close_position(
+                existing_trade_id,
+                price=price,
+                exit_reason=intent.reason,
+                market_source=market_source,
+                observed_at=observed_at,
+            )
             self._mark_processed(intent)
             return existing_trade_id
 
@@ -230,6 +245,8 @@ class ManyBotsFuturesAdapter:
             price=price,
             risk=risk,
             signal_reason=intent.reason,
+            market_source=market_source,
+            observed_at=observed_at,
         )
         self._mark_processed(intent)
         return position.trade_id
@@ -312,7 +329,12 @@ class ManyBotsFuturesAdapter:
                 diagnostics["entries_rejected_position_limit"] = int(diagnostics.get("entries_rejected_position_limit", 0)) + 1
                 reasons["position_already_open"] = int(reasons.get("position_already_open", 0)) + 1
                 continue
-            trade_id = self.apply_intent(intent, price=normalized_prices[normalize_symbol(intent.symbol)])
+            trade_id = self.apply_intent(
+                intent,
+                price=normalized_prices[normalize_symbol(intent.symbol)],
+                market_source=prices.get("market_source", "unknown"),
+                observed_at=prices.get("observed_at"),
+            )
             if trade_id is not None:
                 applied.append(intent)
                 diagnostics["paper_orders_submitted"] = int(diagnostics.get("paper_orders_submitted", 0)) + 1

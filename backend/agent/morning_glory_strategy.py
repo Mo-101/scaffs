@@ -33,6 +33,7 @@ def decide(
 ) -> MorningGloryDecision:
     """Side-aware funding rate state machine.
 
+    Explicitly differentiates FLAT, LONG, SHORT.
     A short entered because funding was strongly positive (longs pay) must be
     closed when funding flips strongly negative (shorts would pay), and vice
     versa.  Reversals are always two distinct steps: CLOSE, then a fresh entry.
@@ -40,18 +41,27 @@ def decide(
     if score is None:
         return MorningGloryDecision("HOLD", None, "insufficient_funding_history")
 
-    if position_side == "short":
-        if score <= -exit_z:
-            return MorningGloryDecision("CLOSE", score, f"funding reversed short: z={score:.4f} <= -{exit_z:.4f}")
+    side = "flat"
+    if position_side is not None:
+        p_side_lower = position_side.strip().lower()
+        if p_side_lower in ("long", "short"):
+            side = p_side_lower
+
+    if side == "short":
+        # SHORT, z <= -z_entry -> CLOSE (rather than HOLD)
+        if score <= -exit_z or score <= -entry_z:
+            return MorningGloryDecision("CLOSE", score, f"funding reversed short: z={score:.4f} <= -{exit_z:.4f} or -{entry_z:.4f}")
         return MorningGloryDecision("HOLD", score, f"short held: z={score:.4f}")
 
-    if position_side == "long":
-        if score >= exit_z:
-            return MorningGloryDecision("CLOSE", score, f"funding reversed long: z={score:.4f} >= {exit_z:.4f}")
+    elif side == "long":
+        # LONG, z >= z_entry -> CLOSE (rather than HOLD)
+        if score >= exit_z or score >= entry_z:
+            return MorningGloryDecision("CLOSE", score, f"funding reversed long: z={score:.4f} >= {exit_z:.4f} or {entry_z:.4f}")
         return MorningGloryDecision("HOLD", score, f"long held: z={score:.4f}")
 
-    if score <= -entry_z:
-        return MorningGloryDecision("OPEN_LONG", score, f"negative funding extreme: z={score:.4f}")
-    if score >= entry_z:
-        return MorningGloryDecision("OPEN_SHORT", score, f"positive funding extreme: z={score:.4f}")
-    return MorningGloryDecision("HOLD", score, f"no entry: |z|={abs(score):.4f} < {entry_z:.4f}")
+    else:  # FLAT / None
+        if score <= -entry_z:
+            return MorningGloryDecision("OPEN_LONG", score, f"negative funding extreme: z={score:.4f}")
+        if score >= entry_z:
+            return MorningGloryDecision("OPEN_SHORT", score, f"positive funding extreme: z={score:.4f}")
+        return MorningGloryDecision("HOLD", score, f"no entry: |z|={abs(score):.4f} < {entry_z:.4f}")

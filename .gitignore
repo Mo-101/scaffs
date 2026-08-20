@@ -1,0 +1,58 @@
+# Environment Variables
+.env
+*.env
+!.env.example
+*.env.local
+*.env.*.local
+
+# Node & Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun.lockb
+.pnpm-debug.log*
+
+# Vite / Frontend Build Outputs
+dist/
+frontend/dist/
+*.tsbuildinfo
+
+# Python artifacts & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+# Anchored: a bare 'lib/' also matched frontend/src/lib/, which silently
+# excluded the frontend API client from every commit.
+/lib/
+/lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs & Temporary files
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

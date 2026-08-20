@@ -1,0 +1,939 @@
+{
+  "schema_version": 1,
+  "session_id": "mr_5x_trailing",
+  "mode": "paper_engine",
+  "data_source": "futures_paper_engine",
+  "engine": "backend/agent/futures_paper_engine.py",
+  "session": {
+    "strategy_id": "mean_reversion_v1",
+    "strategy_type": "futures_paper_engine",
+    "worker_id": "mr_5x_trailing",
+    "timeframe": "15m",
+    "symbols": [
+      "BTC-USDT",
+      "ETH-USDT",
+      "SOL-USDT"
+    ],
+    "leverage": 5,
+    "margin_mode": "isolated",
+    "contract_type": "USDT_PERPETUAL",
+    "market_source": "synthetic_gbm",
+    "price_kind": "mark_price",
+    "notes": "trailing stop variant"
+  },
+  "started_at": "2026-08-19T03:34:09+00:00",
+  "updated_at": "2026-08-20T03:49:09+00:00",
+  "starting_equity": 5000.0,
+  "wallet_balance": 4996.223805133639,
+  "available_balance": 4896.223805133639,
+  "reserved_margin": 100.0,
+  "open_notional": 500.0,
+  "current_equity": 4996.473445420981,
+  "realized_gross_pnl": 0.681770663432459,
+  "realized_net_pnl": -3.449028241793219,
+  "unrealized_gross_pnl": 0.2496402873423137,
+  "unrealized_net_pnl": -0.327967074950379,
+  "fees_paid": 4.497151349273315,
+  "funding_pnl": 0.03918581947993015,
+  "liquidation_fees": 0.0,
+  "open_position_costs": 0.3271666245677056,
+  "net_pnl": -3.526554579018611,
+  "account_return": -0.0007053109158038362,
+  "margin_usage": 0.020015116195805645,
+  "open_positions": [
+    {
+      "trade_id": "1a67dc624fb846ea",
+      "symbol": "ETHUSDT",
+      "side": "short",
+      "direction": -1,
+      "margin_mode": "isolated",
+      "leverage": 5,
+      "isolated_margin": 50.0,
+      "notional": 250.0,
+      "quantity": 0.086590081547664,
+      "entry_price": 2887.1667000612083,
+      "entry_time": "2026-08-20T02:19:09+00:00",
+      "mark_price": 2890.8151269441655,
+      "take_profit_price": 2829.423366059984,
+      "stop_loss_price": 2916.0383670618203,
+      "liquidation_price": 3450.164206573144,
+      "entry_fee": 0.125,
+      "estimated_exit_fee": 0.12515795879065797,
+      "accrued_funding": -0.04593670867965546,
+      "unrealized_gross_pnl": -0.3159175813159544,
+      "unrealized_net_pnl": -0.5201388314269568,
+      "margin_roi_gross_pct": -0.6318351626319088,
+      "margin_roi_net_pct": -1.0402776628539137,
+      "signal_reason": "mean_reversion_z=2.88",
+      "market_regime": "stretched"
+    },
+    {
+      "trade_id": "9f79330b05f040eb",
+      "symbol": "SOLUSDT",
+      "side": "long",
+      "direction": 1,
+      "margin_mode": "isolated",
+      "leverage": 5,
+      "isolated_margin": 50.0,
+      "notional": 250.0,
+      "quantity": 1.3690240831438325,
+      "entry_price": 182.6118350130839,
+      "entry_time": "2026-08-20T03:04:09+00:00",
+      "mark_price": 183.024945253891,
+      "take_profit_price": 186.26407171334557,
+      "stop_loss_price": 180.78571666295306,
+      "liquidation_price": 147.00252718553253,
+      "entry_fee": 0.125,
+      "estimated_exit_fee": 0.12528277893432913,
+      "accrued_funding": 0.1231033332473611,
+      "unrealized_gross_pnl": 0.5655578686582681,
+      "unrealized_net_pnl": 0.1921717564765778,
+      "margin_roi_gross_pct": 1.1311157373165361,
+      "margin_roi_net_pct": 0.3843435129531556,
+      "signal_reason": "mean_reversion_z=-2.50",
+      "market_regime": "ranging"
+    }
+  ],
+  "closed_trades": [
+    {
+      "trade_id": "d310b32c102341d9",
+      "symbol": "ETHUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.08954220266286606,
+      "entry_time": "2026-08-19T07:19:09+00:00",
+      "exit_time": "2026-08-19T09:19:09+00:00",
+      "entry_price": 2791.979564555398,
+      "exit_price": 2783.9423111147594,
+      "gross_pnl": 0.719673376434495,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12464016331178275,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": 0.4700332131227123,
+      "roi_pct": 0.9400664262454246,
+      "hold_seconds": 7200.0,
+      "entry_reason": "mean_reversion_z=1.94",
+      "exit_reason": "trailing_stop",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "ca91710e875e4c92",
+      "symbol": "BTCUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.0025839770668955146,
+      "entry_time": "2026-08-19T05:49:09+00:00",
+      "exit_time": "2026-08-19T10:49:09+00:00",
+      "entry_price": 96750.08466710552,
+      "exit_price": 96387.77298664414,
+      "gross_pnl": 0.9362050733805866,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12453189746330973,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": 0.6866731759172768,
+      "roi_pct": 1.3733463518345537,
+      "hold_seconds": 18000.0,
+      "entry_reason": "mean_reversion_z=1.86",
+      "exit_reason": "trailing_stop",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "195cabe269734ab3",
+      "symbol": "SOLUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 1.3067792834791645,
+      "entry_time": "2026-08-19T11:04:09+00:00",
+      "exit_time": "2026-08-19T12:49:09+00:00",
+      "entry_price": 191.31004230064076,
+      "exit_price": 194.4382949345458,
+      "gross_pnl": -4.0879357354762496,
+      "entry_fee": 0.125,
+      "exit_fee": 0.1270439678677381,
+      "funding_paid": -0.11635244404763578,
+      "liquidation_fee": 0.0,
+      "net_pnl": -4.223627259296352,
+      "roi_pct": -8.447254518592704,
+      "hold_seconds": 6300.0,
+      "entry_reason": "mean_reversion_z=2.31",
+      "exit_reason": "stop_loss",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "fb52b4ed6de048a4",
+      "symbol": "ETHUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.08920625101222886,
+      "entry_time": "2026-08-19T11:34:09+00:00",
+      "exit_time": "2026-08-19T12:49:09+00:00",
+      "entry_price": 2802.494188055596,
+      "exit_price": 2817.5951995985192,
+      "gross_pnl": -1.34710462623656,
+      "entry_fee": 0.125,
+      "exit_fee": 0.1256735523131183,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": -1.5977781785496783,
+      "roi_pct": -3.1955563570993566,
+      "hold_seconds": 4500.0,
+      "entry_reason": "mean_reversion_z=1.94",
+      "exit_reason": "trailing_stop",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "6dd74ca9b1db41f9",
+      "symbol": "ETHUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.08872814662504487,
+      "entry_time": "2026-08-19T12:49:09+00:00",
+      "exit_time": "2026-08-19T13:34:09+00:00",
+      "entry_price": 2817.5951995985192,
+      "exit_price": 2848.3217094590323,
+      "gross_pnl": -2.7263062721794875,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12636315313608973,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": -2.977669425315577,
+      "roi_pct": -5.955338850631154,
+      "hold_seconds": 2700.0,
+      "entry_reason": "mean_reversion_z=2.26",
+      "exit_reason": "stop_loss",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "7ee862f2953f4a80",
+      "symbol": "SOLUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 1.2857549490657592,
+      "entry_time": "2026-08-19T12:49:09+00:00",
+      "exit_time": "2026-08-19T13:49:09+00:00",
+      "entry_price": 194.4382949345458,
+      "exit_price": 189.75010712125575,
+      "gross_pnl": 6.02786068308747,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12198606965845628,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": 5.780874613429013,
+      "roi_pct": 11.561749226858026,
+      "hold_seconds": 3600.0,
+      "entry_reason": "mean_reversion_z=2.08",
+      "exit_reason": "take_profit",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "993725c35d144165",
+      "symbol": "ETHUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.08777098428515691,
+      "entry_time": "2026-08-19T13:34:09+00:00",
+      "exit_time": "2026-08-19T15:19:09+00:00",
+      "entry_price": 2848.3217094590323,
+      "exit_price": 2869.647353743844,
+      "gross_pnl": -1.871772789393073,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12593588639469652,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": -2.1227086757877696,
+      "roi_pct": -4.245417351575539,
+      "hold_seconds": 6300.0,
+      "entry_reason": "mean_reversion_z=2.67",
+      "exit_reason": "trailing_stop",
+      "market_regime": "stretched"
+    },
+    {
+      "trade_id": "dad197e05a2a4041",
+      "symbol": "ETHUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.08711871849822979,
+      "entry_time": "2026-08-19T15:19:09+00:00",
+      "exit_time": "2026-08-19T17:49:09+00:00",
+      "entry_price": 2869.647353743844,
+      "exit_price": 2865.389308485696,
+      "gross_pnl": 0.3709554461973427,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12481452227690133,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": 0.12114092392044139,
+      "roi_pct": 0.2422818478408828,
+      "hold_seconds": 9000.0,
+      "entry_reason": "mean_reversion_z=2.06",
+      "exit_reason": "trailing_stop",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "68811710a66e43ce",
+      "symbol": "SOLUSDT",
+      "side": "short",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 1.283181968207865,
+      "entry_time": "2026-08-19T16:19:09+00:00",
+      "exit_time": "2026-08-19T19:19:09+00:00",
+      "entry_price": 194.8281741748276,
+      "exit_price": 190.80071662739596,
+      "gross_pnl": 5.167960902586968,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12241601954870651,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": 4.920544883038261,
+      "roi_pct": 9.841089766076522,
+      "hold_seconds": 10800.0,
+      "entry_reason": "mean_reversion_z=1.82",
+      "exit_reason": "take_profit",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "37d529b727804ed0",
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.0026237919913821395,
+      "entry_time": "2026-08-19T16:04:09+00:00",
+      "exit_time": "2026-08-19T19:34:09+00:00",
+      "entry_price": 95281.94339380808,
+      "exit_price": 95379.87927323233,
+      "gross_pnl": 0.25696337610233505,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12512848168805116,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": 0.006834894414283893,
+      "roi_pct": 0.013669788828567786,
+      "hold_seconds": 12600.0,
+      "entry_reason": "mean_reversion_z=-2.18",
+      "exit_reason": "trailing_stop",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "2eda1dd9f8a443f8",
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.002632635679146018,
+      "entry_time": "2026-08-19T20:04:09+00:00",
+      "exit_time": "2026-08-19T20:49:09+00:00",
+      "entry_price": 94961.86729532425,
+      "exit_price": 94351.43317072654,
+      "gross_pnl": -1.6070506561842026,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12419647467190789,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": -1.8562471308561106,
+      "roi_pct": -3.7124942617122207,
+      "hold_seconds": 2700.0,
+      "entry_reason": "mean_reversion_z=-1.94",
+      "exit_reason": "trailing_stop",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "ddb648ab8f514ba6",
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.002649668283762381,
+      "entry_time": "2026-08-19T20:49:09+00:00",
+      "exit_time": "2026-08-19T22:04:09+00:00",
+      "entry_price": 94351.43317072654,
+      "exit_price": 93758.01860338102,
+      "gross_pnl": -1.5723517582180013,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12421382412089099,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": -1.8215655823388923,
+      "roi_pct": -3.6431311646777846,
+      "hold_seconds": 4500.0,
+      "entry_reason": "mean_reversion_z=-2.69",
+      "exit_reason": "trailing_stop",
+      "market_regime": "stretched"
+    },
+    {
+      "trade_id": "75357b52a9b848ba",
+      "symbol": "SOLUSDT",
+      "side": "long",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 1.3205965429453221,
+      "entry_time": "2026-08-20T01:04:09+00:00",
+      "exit_time": "2026-08-20T01:49:09+00:00",
+      "entry_price": 189.30838592264206,
+      "exit_price": 186.60455697197693,
+      "gross_pnl": -3.570667164963844,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12321466641751808,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": -3.818881831381362,
+      "roi_pct": -7.637763662762724,
+      "hold_seconds": 2700.0,
+      "entry_reason": "mean_reversion_z=-2.24",
+      "exit_reason": "stop_loss",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "2cb44b742f534b81",
+      "symbol": "ETHUSDT",
+      "side": "long",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.08898368190346215,
+      "entry_time": "2026-08-19T23:34:09+00:00",
+      "exit_time": "2026-08-20T02:19:09+00:00",
+      "entry_price": 2809.503884894575,
+      "exit_price": 2887.1667000612083,
+      "gross_pnl": 6.910723240515065,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12845536162025753,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": 6.657267878894807,
+      "roi_pct": 13.314535757789614,
+      "hold_seconds": 9900.0,
+      "entry_reason": "mean_reversion_z=-1.98",
+      "exit_reason": "take_profit",
+      "market_regime": "ranging"
+    },
+    {
+      "trade_id": "75b97aed93ac4868",
+      "symbol": "SOLUSDT",
+      "side": "long",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 1.3397314838219272,
+      "entry_time": "2026-08-20T01:49:09+00:00",
+      "exit_time": "2026-08-20T02:19:09+00:00",
+      "entry_price": 186.60455697197693,
+      "exit_price": 184.7201696834059,
+      "gross_pnl": -2.5245729782124307,
+      "entry_fee": 0.125,
+      "exit_fee": 0.12373771351089378,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": -2.7733106917233243,
+      "roi_pct": -5.546621383446649,
+      "hold_seconds": 1800.0,
+      "entry_reason": "mean_reversion_z=-2.75",
+      "exit_reason": "stop_loss",
+      "market_regime": "stretched"
+    },
+    {
+      "trade_id": "9734b732b97a4da5",
+      "symbol": "BTCUSDT",
+      "side": "long",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 0.002666438601455094,
+      "entry_time": "2026-08-19T22:04:09+00:00",
+      "exit_time": "2026-08-20T02:34:09+00:00",
+      "entry_price": 93758.01860338102,
+      "exit_price": 94677.82508925624,
+      "gross_pnl": 2.4526075198064428,
+      "entry_fee": 0.125,
+      "exit_fee": 0.1262263037599032,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": 2.2013812160465394,
+      "roi_pct": 4.402762432093079,
+      "hold_seconds": 16200.0,
+      "entry_reason": "mean_reversion_z=-2.66",
+      "exit_reason": "trailing_stop",
+      "market_regime": "stretched"
+    },
+    {
+      "trade_id": "3d448dec74574e43",
+      "symbol": "SOLUSDT",
+      "side": "long",
+      "leverage": 5,
+      "margin_used": 50.0,
+      "notional": 250.0,
+      "quantity": 1.3533984969182193,
+      "entry_time": "2026-08-20T02:19:09+00:00",
+      "exit_time": "2026-08-20T03:04:09+00:00",
+      "entry_price": 184.7201696834059,
+      "exit_price": 182.6118350130839,
+      "gross_pnl": -2.8534169738143955,
+      "entry_fee": 0.125,
+      "exit_fee": 0.1235732915130928,
+      "funding_paid": 0.0,
+      "liquidation_fee": 0.0,
+      "net_pnl": -3.1019902653274882,
+      "roi_pct": -6.2039805306549765,
+      "hold_seconds": 2700.0,
+      "entry_reason": "mean_reversion_z=-2.80",
+      "exit_reason": "stop_loss",
+      "market_regime": "stretched"
+    }
+  ],
+  "equity_curve": [
+    {
+      "timestamp": "2026-08-19T03:34:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T03:49:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T04:04:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T04:19:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T04:34:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T04:49:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T05:04:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T05:19:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T05:34:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T05:49:09+00:00",
+      "equity": 5000.0
+    },
+    {
+      "timestamp": "2026-08-19T06:04:09+00:00",
+      "equity": 4999.690682867338
+    },
+    {
+      "timestamp": "2026-08-19T06:19:09+00:00",
+      "equity": 4999.398902435665
+    },
+    {
+      "timestamp": "2026-08-19T06:34:09+00:00",
+      "equity": 4999.261053072019
+    },
+    {
+      "timestamp": "2026-08-19T06:49:09+00:00",
+      "equity": 5000.483450269399
+    },
+    {
+      "timestamp": "2026-08-19T07:04:09+00:00",
+      "equity": 4999.8545494709815
+    },
+    {
+      "timestamp": "2026-08-19T07:19:09+00:00",
+      "equity": 4999.480857537413
+    },
+    {
+      "timestamp": "2026-08-19T07:34:09+00:00",
+      "equity": 4999.403016255673
+    },
+    {
+      "timestamp": "2026-08-19T07:49:09+00:00",
+      "equity": 5001.929674014297
+    },
+    {
+      "timestamp": "2026-08-19T08:04:09+00:00",
+      "equity": 5003.328916950021
+    },
+    {
+      "timestamp": "2026-08-19T08:19:09+00:00",
+      "equity": 5004.114126877167
+    },
+    {
+      "timestamp": "2026-08-19T08:34:09+00:00",
+      "equity": 5004.7296662023455
+    },
+    {
+      "timestamp": "2026-08-19T08:49:09+00:00",
+      "equity": 5003.201632911607
+    },
+    {
+      "timestamp": "2026-08-19T09:04:09+00:00",
+      "equity": 5004.188562015258
+    },
+    {
+      "timestamp": "2026-08-19T09:19:09+00:00",
+      "equity": 5002.511422078134
+    },
+    {
+      "timestamp": "2026-08-19T09:34:09+00:00",
+      "equity": 5002.977242783712
+    },
+    {
+      "timestamp": "2026-08-19T09:49:09+00:00",
+      "equity": 5002.751366596098
+    },
+    {
+      "timestamp": "2026-08-19T10:04:09+00:00",
+      "equity": 5002.463055576925
+    },
+    {
+      "timestamp": "2026-08-19T10:19:09+00:00",
+      "equity": 5002.9427081789945
+    },
+    {
+      "timestamp": "2026-08-19T10:34:09+00:00",
+      "equity": 5001.689641427385
+    },
+    {
+      "timestamp": "2026-08-19T10:49:09+00:00",
+      "equity": 5001.15670638904
+    },
+    {
+      "timestamp": "2026-08-19T11:04:09+00:00",
+      "equity": 5001.15670638904
+    },
+    {
+      "timestamp": "2026-08-19T11:19:09+00:00",
+      "equity": 4999.184876488423
+    },
+    {
+      "timestamp": "2026-08-19T11:34:09+00:00",
+      "equity": 4999.418156247791
+    },
+    {
+      "timestamp": "2026-08-19T11:49:09+00:00",
+      "equity": 5000.52531097842
+    },
+    {
+      "timestamp": "2026-08-19T12:04:09+00:00",
+      "equity": 4998.969713790931
+    },
+    {
+      "timestamp": "2026-08-19T12:19:09+00:00",
+      "equity": 4998.289025076776
+    },
+    {
+      "timestamp": "2026-08-19T12:34:09+00:00",
+      "equity": 4998.132145236252
+    },
+    {
+      "timestamp": "2026-08-19T12:49:09+00:00",
+      "equity": 4995.335300951194
+    },
+    {
+      "timestamp": "2026-08-19T13:04:09+00:00",
+      "equity": 4994.892552880533
+    },
+    {
+      "timestamp": "2026-08-19T13:19:09+00:00",
+      "equity": 4995.89776189189
+    },
+    {
+      "timestamp": "2026-08-19T13:34:09+00:00",
+      "equity": 4995.951710589563
+    },
+    {
+      "timestamp": "2026-08-19T13:49:09+00:00",
+      "equity": 4998.4132554802445
+    },
+    {
+      "timestamp": "2026-08-19T14:04:09+00:00",
+      "equity": 4998.761067339203
+    },
+    {
+      "timestamp": "2026-08-19T14:19:09+00:00",
+      "equity": 4998.773602653534
+    },
+    {
+      "timestamp": "2026-08-19T14:34:09+00:00",
+      "equity": 4997.911432712319
+    },
+    {
+      "timestamp": "2026-08-19T14:49:09+00:00",
+      "equity": 4998.226330722203
+    },
+    {
+      "timestamp": "2026-08-19T15:04:09+00:00",
+      "equity": 4997.865997811362
+    },
+    {
+      "timestamp": "2026-08-19T15:19:09+00:00",
+      "equity": 4996.0157974635185
+    },
+    {
+      "timestamp": "2026-08-19T15:34:09+00:00",
+      "equity": 4998.277322772839
+    },
+    {
+      "timestamp": "2026-08-19T15:49:09+00:00",
+      "equity": 4999.316145245279
+    },
+    {
+      "timestamp": "2026-08-19T16:04:09+00:00",
+      "equity": 4999.0914692130245
+    },
+    {
+      "timestamp": "2026-08-19T16:19:09+00:00",
+      "equity": 4998.965928890778
+    },
+    {
+      "timestamp": "2026-08-19T16:34:09+00:00",
+      "equity": 4996.5278294494465
+    },
+    {
+      "timestamp": "2026-08-19T16:49:09+00:00",
+      "equity": 4996.713586193196
+    },
+    {
+      "timestamp": "2026-08-19T17:04:09+00:00",
+      "equity": 4995.594802633558
+    },
+    {
+      "timestamp": "2026-08-19T17:19:09+00:00",
+      "equity": 4998.220342899437
+    },
+    {
+      "timestamp": "2026-08-19T17:34:09+00:00",
+      "equity": 5000.774968254227
+    },
+    {
+      "timestamp": "2026-08-19T17:49:09+00:00",
+      "equity": 5001.924612078903
+    },
+    {
+      "timestamp": "2026-08-19T18:04:09+00:00",
+      "equity": 5000.858362701676
+    },
+    {
+      "timestamp": "2026-08-19T18:19:09+00:00",
+      "equity": 5002.492765452975
+    },
+    {
+      "timestamp": "2026-08-19T18:34:09+00:00",
+      "equity": 5001.550669831591
+    },
+    {
+      "timestamp": "2026-08-19T18:49:09+00:00",
+      "equity": 5002.249494641969
+    },
+    {
+      "timestamp": "2026-08-19T19:04:09+00:00",
+      "equity": 5001.836523376174
+    },
+    {
+      "timestamp": "2026-08-19T19:19:09+00:00",
+      "equity": 5002.119755323017
+    },
+    {
+      "timestamp": "2026-08-19T19:34:09+00:00",
+      "equity": 5001.064318164891
+    },
+    {
+      "timestamp": "2026-08-19T19:49:09+00:00",
+      "equity": 5001.064318164891
+    },
+    {
+      "timestamp": "2026-08-19T20:04:09+00:00",
+      "equity": 5001.064318164891
+    },
+    {
+      "timestamp": "2026-08-19T20:19:09+00:00",
+      "equity": 5001.889250432653
+    },
+    {
+      "timestamp": "2026-08-19T20:34:09+00:00",
+      "equity": 5000.397006929983
+    },
+    {
+      "timestamp": "2026-08-19T20:49:09+00:00",
+      "equity": 4999.208071034035
+    },
+    {
+      "timestamp": "2026-08-19T21:04:09+00:00",
+      "equity": 4999.260366953207
+    },
+    {
+      "timestamp": "2026-08-19T21:19:09+00:00",
+      "equity": 5000.32500759157
+    },
+    {
+      "timestamp": "2026-08-19T21:34:09+00:00",
+      "equity": 5000.753843426597
+    },
+    {
+      "timestamp": "2026-08-19T21:49:09+00:00",
+      "equity": 4999.354249166498
+    },
+    {
+      "timestamp": "2026-08-19T22:04:09+00:00",
+      "equity": 4997.386505451696
+    },
+    {
+      "timestamp": "2026-08-19T22:19:09+00:00",
+      "equity": 4997.525588548979
+    },
+    {
+      "timestamp": "2026-08-19T22:34:09+00:00",
+      "equity": 4996.986198569632
+    },
+    {
+      "timestamp": "2026-08-19T22:49:09+00:00",
+      "equity": 4996.167328472872
+    },
+    {
+      "timestamp": "2026-08-19T23:04:09+00:00",
+      "equity": 4996.884556371915
+    },
+    {
+      "timestamp": "2026-08-19T23:19:09+00:00",
+      "equity": 4997.695381715528
+    },
+    {
+      "timestamp": "2026-08-19T23:34:09+00:00",
+      "equity": 4997.81253924017
+    },
+    {
+      "timestamp": "2026-08-19T23:49:09+00:00",
+      "equity": 4998.034093573556
+    },
+    {
+      "timestamp": "2026-08-20T00:04:09+00:00",
+      "equity": 4999.475488297379
+    },
+    {
+      "timestamp": "2026-08-20T00:19:09+00:00",
+      "equity": 5000.514895738641
+    },
+    {
+      "timestamp": "2026-08-20T00:34:09+00:00",
+      "equity": 5001.154735398299
+    },
+    {
+      "timestamp": "2026-08-20T00:49:09+00:00",
+      "equity": 5002.291497215334
+    },
+    {
+      "timestamp": "2026-08-20T01:04:09+00:00",
+      "equity": 5002.833541586544
+    },
+    {
+      "timestamp": "2026-08-20T01:19:09+00:00",
+      "equity": 4999.522404785429
+    },
+    {
+      "timestamp": "2026-08-20T01:34:09+00:00",
+      "equity": 5001.775214978208
+    },
+    {
+      "timestamp": "2026-08-20T01:49:09+00:00",
+      "equity": 5001.878857645976
+    },
+    {
+      "timestamp": "2026-08-20T02:04:09+00:00",
+      "equity": 5002.330918315601
+    },
+    {
+      "timestamp": "2026-08-20T02:19:09+00:00",
+      "equity": 5000.248226922483
+    },
+    {
+      "timestamp": "2026-08-20T02:34:09+00:00",
+      "equity": 5000.886856723029
+    },
+    {
+      "timestamp": "2026-08-20T02:49:09+00:00",
+      "equity": 4999.217753054339
+    },
+    {
+      "timestamp": "2026-08-20T03:04:09+00:00",
+      "equity": 4996.892018503481
+    },
+    {
+      "timestamp": "2026-08-20T03:19:09+00:00",
+      "equity": 4997.562457617077
+    },
+    {
+      "timestamp": "2026-08-20T03:34:09+00:00",
+      "equity": 4996.550612045548
+    }
+  ],
+  "metrics": {
+    "trade_stats": {
+      "closed_trades": 17,
+      "win_count": 8,
+      "loss_count": 9,
+      "breakeven_count": 0,
+      "win_rate": 0.47058823529411764,
+      "avg_win": 2.6055938498479168,
+      "avg_loss": 2.699308782286284,
+      "largest_win": 6.657267878894807,
+      "largest_loss": -4.223627259296352,
+      "gross_profit": 20.844750798783334,
+      "gross_loss": 24.293779040576556,
+      "profit_factor": 0.8580283357302089,
+      "realized_net_pnl": -3.44902824179322,
+      "total_fees": 4.247151349273315,
+      "total_funding": -0.11635244404763578,
+      "total_liquidation_fees": 0.0,
+      "liquidations": 0,
+      "status": "ok"
+    },
+    "risk": {
+      "resample_seconds": 900,
+      "periods_per_year": 35040.0,
+      "sample_count": 96,
+      "session_seconds": 86400.0,
+      "period_return_mean": -7.1611783889387786e-06,
+      "period_return_std": 0.00023575114777562366,
+      "annualized_return": -0.2219220672743839,
+      "annualized_volatility": 0.04413019683686488,
+      "downside_deviation": 0.03253323888598135,
+      "sharpe": -5.686076852908987,
+      "sortino": -7.7129637054532605,
+      "calmar": -112.90506852353836,
+      "max_drawdown": 0.0019655633726320954,
+      "cvar_95": 0.0005181429634438129,
+      "total_return": -0.0006898775908903421,
+      "sharpe_status": "ok",
+      "calmar_status": "ok",
+      "annualization_status": "ok"
+    }
+  }
+}

@@ -68,11 +68,11 @@ export const api = {
   createGoal: async (..._args: any[]): Promise<any> => {},
   createSession: async (..._args: any[]): Promise<any> => {},
   deleteSession: async (..._args: any[]): Promise<any> => {},
-  getChannelStatus: async (..._args: any[]): Promise<any> => {},
-  getDataSourceSettings: async (..._args: any[]): Promise<any> => {},
+  getChannelStatus: async (): Promise<any> => get("/channels/status"),
+  getDataSourceSettings: async (): Promise<any> => get("/settings/data-sources"),
   getDbStatus: async (..._args: any[]): Promise<any> => {},
   getGoal: async (..._args: any[]): Promise<any> => {},
-  getLLMSettings: async (..._args: any[]): Promise<any> => {},
+  getLLMSettings: async (): Promise<any> => get("/settings/llm"),
   getLiveStatus: async (..._args: any[]): Promise<any> => {},
   getPaperDecisionHealth: async (): Promise<any> => get("/paper-sessions/decision-health"),
   getPaperProviderHealth: async (): Promise<any> => get("/paper-sessions/provider-health"),
@@ -97,16 +97,32 @@ export const api = {
   saveGridState: async (..._args: any[]): Promise<any> => {},
   sendMessage: async (..._args: any[]): Promise<any> => {},
   sseUrl: "",
-  startChannels: async (..._args: any[]): Promise<any> => {},
+  startChannels: async (): Promise<any> => post("/channels/start"),
   startLiveRunner: async (..._args: any[]): Promise<any> => {},
-  stopChannels: async (..._args: any[]): Promise<any> => {},
+  stopChannels: async (): Promise<any> => post("/channels/stop"),
   stopLiveRunner: async (..._args: any[]): Promise<any> => {},
   switchTestnet: async (payload?: any): Promise<any> => post("/paper-sessions/switch-testnet", payload),
   syncDb: async (..._args: any[]): Promise<any> => {},
   triggerMorningGlory: async (..._args: any[]): Promise<any> => {},
-  updateDataSourceSettings: async (..._args: any[]): Promise<any> => {},
+  updateDataSourceSettings: async (payload: any): Promise<any> => {
+    const res = await fetch("/settings/data-sources", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new ApiError(`${res.status}: ${res.statusText}`);
+    return res.json();
+  },
   updateGoal: async (..._args: any[]): Promise<any> => {},
   updateGoalStatus: async (..._args: any[]): Promise<any> => {},
-  updateLLMSettings: async (..._args: any[]): Promise<any> => {},
+  updateLLMSettings: async (payload: any): Promise<any> => {
+    const res = await fetch("/settings/llm", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new ApiError(`${res.status}: ${res.statusText}`);
+    return res.json();
+  },
   uploadFile: async (..._args: any[]): Promise<any> => {},
 };

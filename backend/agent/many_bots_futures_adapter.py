@@ -25,17 +25,20 @@ Guarantees enforced here:
 
 from __future__ import annotations
 
-try:
-    from .futures_paper_engine import FuturesPaperEngine, Position, RiskConfig, normalize_symbol
-except (ImportError, ValueError):
-    from futures_paper_engine import FuturesPaperEngine, Position, RiskConfig, normalize_symbol
+if __package__:
+    from .futures_paper_engine import RiskConfig, normalize_symbol  # pyrefly: ignore [missing-import]
+else:
+    from futures_paper_engine import RiskConfig, normalize_symbol  # pyrefly: ignore [missing-import]
 
 import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
+
+if TYPE_CHECKING:
+    from futures_paper_engine import FuturesPaperEngine  # pyrefly: ignore [missing-import]
 
 Action = Literal["OPEN_LONG", "OPEN_SHORT", "CLOSE"]
 

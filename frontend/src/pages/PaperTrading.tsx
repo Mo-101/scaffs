@@ -17,6 +17,7 @@ function isAllowedLeverage(value: unknown): value is (typeof ALLOWED_LEVERAGE)[n
 }
 
 function isSupportedFuturesSession(s: PaperSessionSummary): boolean {
+  if (!s?.session) return false;
   const risk = s.session.risk_config;
   const usesFuturesAccounting = s.session.strategy_type === "futures_paper_engine"
     || risk?.portfolio_leverage === true

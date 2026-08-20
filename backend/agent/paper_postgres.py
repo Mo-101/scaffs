@@ -12,13 +12,10 @@ from uuid import uuid4
 
 import psycopg
 
-# pyrefly: ignore [missing-import]
-try:
-    # pyrefly: ignore [missing-import]
-    from positions_reconciliation import reconcile_positions, validate_position_snapshot
-except (ImportError, ValueError):
-    # pyrefly: ignore [missing-import]
-    from positions_reconciliation import reconcile_positions, validate_position_snapshot
+if __package__:
+    from .positions_reconciliation import reconcile_positions, validate_position_snapshot  # pyrefly: ignore [missing-import]
+else:
+    from positions_reconciliation import reconcile_positions, validate_position_snapshot  # pyrefly: ignore [missing-import]
 
 ALLOWED_LEVERAGE = {5, 10}
 

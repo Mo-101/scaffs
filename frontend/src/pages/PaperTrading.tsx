@@ -255,7 +255,7 @@ const MarketSourceBadge: React.FC<{
 };
 
 const MarketRoute: React.FC<{ active: MarketSource | null }> = ({ active }) => (
-  <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-500" aria-label="Market data provider priority">
+  <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-200" aria-label="Market data provider priority">
     <span>Feed priority</span>
     {MARKET_SOURCE_ROUTE.map((source, index) => (
       <span key={source} className="inline-flex items-center gap-1.5">
@@ -263,14 +263,14 @@ const MarketRoute: React.FC<{ active: MarketSource | null }> = ({ active }) => (
         <span className={cn(
           "rounded border px-1.5 py-0.5 uppercase tracking-wide",
           active === source
-            ? "border-emerald-800 bg-emerald-950/40 text-emerald-400"
+            ? "border-emerald-800 bg-emerald-950/40 text-emerald-100"
             : "border-gray-800 bg-gray-900/50 text-gray-500",
         )}>
           {source}
         </span>
       </span>
     ))}
-    <span className="text-gray-600">latest completed cycle</span>
+    <span className="text-gray-100">latest completed cycle</span>
   </div>
 );
 
@@ -299,7 +299,7 @@ const OperationsSummary: React.FC<{
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Operations</p>
-          <p className="mt-1 text-sm text-gray-200">Paper execution only. Live capital execution remains disabled.</p>
+          <p className="mt-1 text-sm text-gray-50">Paper execution only. Live capital execution remains disabled.</p>
         </div>
         <span className={cn(
           "rounded border px-2 py-1 text-xs font-semibold",
@@ -957,7 +957,7 @@ function buildPositions(s: PaperSessionSummary, nowMs: number): Position[] {
         // correctly described a short. Only fall back to the sign of the
         // quantity for spot rows, which carry no side of their own.
         side: futuresMark ? (futuresMark.side === "long" ? "LONG" : "SHORT")
-                          : direction >= 0 ? "LONG" : "SHORT",
+          : direction >= 0 ? "LONG" : "SHORT",
         margin: margin != null ? usd(margin) : "—",
         leverage: futuresMark ? `${futuresMark.leverage}x` : meta ? `${meta.leverage}x` : "1x",
         notional: value != null ? usd(Math.abs(value)) : "—",
@@ -1618,7 +1618,7 @@ export function PaperTrading() {
                     sess.session_id === s.session_id ? "border-emerald-500 text-emerald-400 bg-emerald-500/10" : "border-gray-800 text-gray-500",
                   )}
                 >
-                {sessionDisplayName(sess)}
+                  {sessionDisplayName(sess)}
                 </button>
               ))}
             </div>
@@ -1683,7 +1683,7 @@ export function PaperTrading() {
           <div className="mt-2"><MarketRoute active={market.source} /></div>
           <div className="mt-1 flex items-center gap-3 text-sm flex-wrap">
             <span className="text-gray-500">Session:</span>
-          <span className="font-semibold text-emerald-400">{sessionDisplayName(s)}</span>
+            <span className="font-semibold text-emerald-400">{sessionDisplayName(s)}</span>
             <span className="rounded bg-blue-900/40 px-2 py-0.5 text-xs text-blue-400 border border-blue-800">
               {isLeveraged ? `${s.session.risk_config?.margin_mode ?? "isolated"} · ${configuredLeverage}x · ${leveragedCount} open` : "Invalid leverage configuration"}
             </span>

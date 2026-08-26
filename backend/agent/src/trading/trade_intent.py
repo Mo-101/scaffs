@@ -42,13 +42,19 @@ class ExecutionResult:
     """Normalized outcome of an execution attempt, independent of exchange."""
 
     intent_id: str
-    status: Literal["DRY_RUN", "SUBMITTED", "FAILED", "REJECTED"]
+    status: Literal[
+        "DRY_RUN", "SUBMITTED", "FILLED", "PARTIALLY_FILLED", "CANCELED", "EXPIRED", "FAILED", "REJECTED"
+    ]
     exchange: str = "binance"
     environment: str = "testnet"
     exchange_order_id: Optional[str] = None
     submitted_at: Optional[str] = None
     raw_status: Optional[dict[str, Any]] = None
     error: Optional[str] = None
+    filled_price: Optional[float] = None
+    filled_qty: Optional[float] = None
+    commission: Optional[float] = None
+    realized_pnl: Optional[float] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

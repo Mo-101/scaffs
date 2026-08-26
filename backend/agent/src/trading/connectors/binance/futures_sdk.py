@@ -668,6 +668,12 @@ class BinanceFuturesClient:
 
             raise
 
+    def get_order_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
+        """Fetch user trades (fills) for a specific order."""
+        formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
+        params = {"symbol": formatted_symbol, "orderId": order_id}
+        return self._request("GET", "/fapi/v1/userTrades", params=params, signed=True)
+
     def get_open_orders(self, symbol: Optional[str] = None) -> list[dict[str, Any]]:
         """Get all currently open orders."""
         params = {}

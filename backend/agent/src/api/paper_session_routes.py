@@ -1156,6 +1156,27 @@ def register_paper_session_routes(
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Binance Testnet positions fetch failed: {exc}") from exc
 
+    @app.get("/paper-sessions/binance-testnet/market", dependencies=auth_dependencies)
+    async def get_binance_testnet_market(symbols: str = Query(..., description="Comma-separated symbols, e.g. BTC-USDT,ETH-USDT")):
+        """Live Binance USD-M Futures Testnet market snapshot for requested symbols."""
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+
+        requested = [s.strip() for s in symbols.split(",") if s.strip()]
+        if not requested:
+            raise HTTPException(status_code=400, detail="symbols query parameter is required")
+
+        client = get_binance_futures_client()
+        try:
+            snapshots = await run_in_threadpool(client.get_market_snapshots, requested)
+            return {
+                "ok": True,
+                "source": "binance_testnet",
+                "snapshots": [snap.__dict__ for snap in snapshots.values()],
+            }
+        except Exception as exc:
+            logger.warning("Binance Testnet market snapshot failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"Binance Testnet market snapshot failed: {exc}") from exc
+
     @app.post("/paper-sessions/binance-testnet/configure-account", dependencies=auth_dependencies)
     async def configure_binance_testnet_account(payload: dict[str, Any] = Body(...)):
         """Governance endpoint for symbol leverage and margin mode.

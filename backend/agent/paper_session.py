@@ -638,11 +638,32 @@ def _validated_prices(provider: str, fetcher, symbols: list[str]) -> dict[str, f
     return {symbol: float(prices[symbol]) for symbol in symbols}
 
 
+def _fetch_last_prices_binance_testnet(symbols: list[str]) -> dict[str, float]:
+    """Live Binance USD-M Futures Testnet mark prices.
+
+    This is the only price path when TRADING_ENV=binance_testnet. A stale,
+    missing, or invalid snapshot raises so the strategy cycle fails closed.
+    """
+    try:
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+    except ImportError:
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+
+    client = get_binance_futures_client()
+    snapshots = client.get_market_snapshots(symbols)
+    logger.info("strategy cycle consumed binance_testnet prices: %s", {
+        symbol: snap.mark_price for symbol, snap in snapshots.items()
+    })
+    return {symbol: snap.mark_price for symbol, snap in snapshots.items()}
+
+
 @dataclass(frozen=True, slots=True)
 class PriceFetchResult:
     """Prices plus which exchange actually answered -- see fetch_last_prices_with_source."""
     prices: dict[str, float]
-    source: Literal["okx", "binance", "bybit", "gate"]
+    source: Literal["okx", "binance", "bybit", "gate", "binance_testnet"]
 
 
 def fetch_last_prices_with_source(symbols: list[str]) -> PriceFetchResult:
@@ -652,7 +673,15 @@ def fetch_last_prices_with_source(symbols: list[str]) -> PriceFetchResult:
     accepted only when it returns a complete, finite, positive snapshot for
     every requested symbol. Each failed attempt is logged before trying the
     next provider; callers persist the provider that actually answered.
+
+    When TRADING_ENV=binance_testnet, the strategy exclusively uses live
+    Binance Testnet mark data. No fallback to public spot providers is allowed,
+    so stale or invalid testnet snapshots fail the cycle.
     """
+    if (os.getenv("TRADING_ENV") or "").strip().lower() == "binance_testnet":
+        prices = _validated_prices("binance_testnet", _fetch_last_prices_binance_testnet, symbols)
+        return PriceFetchResult(prices=prices, source="binance_testnet")
+
     providers = [
         ("okx", _fetch_last_prices_okx),
         ("binance", _fetch_last_prices_binance),

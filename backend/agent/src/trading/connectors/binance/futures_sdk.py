@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping, Optional, Union
 
@@ -39,6 +40,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_FUTURES_TESTNET_HOST = "https://testnet.binancefuture.com"
 DEFAULT_FUTURES_LIVE_HOST = "https://fapi.binance.com"
 ALLOWED_TESTNET_HOSTS = {DEFAULT_FUTURES_TESTNET_HOST, "https://testnet.binancefuture.com"}
+
+_STALENESS_MS = 60_000
+
+
+def _format_symbol(symbol: str) -> str:
+    """Normalize user-facing BTC-USDT / BTC/USDT into Binance API form BTCUSDT."""
+    return symbol.upper().replace("-", "").replace("/", "")
 
 
 def _normalize_trading_env(raw: str | None) -> str:
@@ -235,6 +243,20 @@ class BinanceFuturesConfig:
         return self.testnet_host if self.is_testnet else DEFAULT_FUTURES_LIVE_HOST
 
 
+@dataclass(frozen=True, slots=True)
+class MarketSnapshot:
+    """Normalized testnet market data for one symbol."""
+
+    symbol: str
+    timestamp: str
+    mark_price: float
+    last_price: float
+    bid: float
+    ask: float
+    time_ms: int
+    source: str = "binance_testnet"
+
+
 class BinanceFuturesClient:
     """Synchronous REST client for Binance USD-M Futures Testnet / Live."""
 
@@ -361,9 +383,82 @@ class BinanceFuturesClient:
 
     def get_ticker_price(self, symbol: str) -> float:
         """Fetch current mark/ticker price for a symbol."""
-        formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
+        formatted_symbol = _format_symbol(symbol)
         res = self._request("GET", "/fapi/v1/ticker/price", params={"symbol": formatted_symbol}, signed=False)
         return float(res.get("price", 0.0))
+
+    def get_market_snapshot(self, symbol: str) -> MarketSnapshot:
+        """Single-symbol normalized snapshot."""
+        return self.get_market_snapshots([symbol])[symbol]
+
+    def get_market_snapshots(self, symbols: list[str]) -> dict[str, MarketSnapshot]:
+        """Batch-fetch normalized market snapshots for requested symbols.
+
+        Uses Binance USD-M Testnet public endpoints:
+          - /fapi/v1/premiumIndex for mark price and timestamp
+          - /fapi/v1/ticker/price for last trade price
+          - /fapi/v1/depth for best bid/ask
+
+        Stale or invalid data raises BinanceAPIError so the caller can fail closed.
+        """
+        now_ms = int(time.time() * 1000)
+        formatted = {s: _format_symbol(s) for s in symbols}
+        wanted = set(formatted.values())
+
+        premium = self._request("GET", "/fapi/v1/premiumIndex", signed=False)
+        by_mark = {m["symbol"]: m for m in premium if isinstance(m, dict)}
+
+        tickers = self._request("GET", "/fapi/v1/ticker/price", signed=False)
+        by_ticker = {t["symbol"]: t for t in tickers if isinstance(t, dict)}
+
+        missing_mark = wanted - by_mark.keys()
+        if missing_mark:
+            raise BinanceAPIError(f"No mark price for symbols: {sorted(missing_mark)}")
+
+        result: dict[str, MarketSnapshot] = {}
+        for original, f in formatted.items():
+            mark = by_mark[f]
+            ticker = by_ticker.get(f, {})
+            time_ms = int(mark.get("time", 0))
+
+            if now_ms - time_ms > _STALENESS_MS:
+                raise BinanceAPIError(
+                    f"Stale market data for {original}: snapshot age {now_ms - time_ms}ms"
+                )
+
+            mark_price = float(mark.get("markPrice", 0.0))
+            last_price = float(ticker.get("price", mark.get("markPrice", 0.0)))
+            if mark_price <= 0 or last_price <= 0:
+                raise BinanceAPIError(f"Invalid price for {original}: mark={mark_price} last={last_price}")
+
+            depth = self._request(
+                "GET", "/fapi/v1/depth", params={"symbol": f, "limit": 5}, signed=False
+            )
+            bids = depth.get("bids") or []
+            asks = depth.get("asks") or []
+            if not bids or not asks:
+                raise BinanceAPIError(f"No orderbook depth for {original}")
+            bid = float(bids[0][0])
+            ask = float(asks[0][0])
+            if not (0 < bid < ask):
+                raise BinanceAPIError(f"Invalid bid/ask for {original}: bid={bid} ask={ask}")
+
+            timestamp = datetime.fromtimestamp(time_ms / 1000.0, tz=timezone.utc).isoformat()
+            logger.info(
+                "binance_testnet market snapshot: %s mark=%s last=%s bid=%s ask=%s time_ms=%s",
+                f, mark_price, last_price, bid, ask, time_ms,
+            )
+            result[original] = MarketSnapshot(
+                symbol=f,
+                timestamp=timestamp,
+                mark_price=mark_price,
+                last_price=last_price,
+                bid=bid,
+                ask=ask,
+                time_ms=time_ms,
+            )
+
+        return result
 
     def set_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
         """Set initial leverage for a symbol (e.g., 5x or 10x)."""

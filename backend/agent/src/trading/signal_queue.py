@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg
+from psycopg.types.json import Json
 
 _PAPER_SESSIONS_DIR = Path(__file__).resolve().parents[2] / "paper_sessions"
 
@@ -356,6 +357,31 @@ class SignalQueueManager:
             return 5
         return 1
 
+    def _reconcile_order(self, client: Any, symbol: str, queue_id: str, order_id: str) -> dict[str, Any]:
+        """Query the exchange for the latest order state and fills."""
+        fill_summary: dict[str, Any] = {"order_id": order_id, "status": "SUBMITTED"}
+        try:
+            order = client.get_order(symbol=symbol, client_order_id=queue_id[:32])
+            exchange_status = (order.get("status") or "").upper()
+            fill_summary["status"] = exchange_status if exchange_status in {"NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "REJECTED", "EXPIRED"} else "SUBMITTED"
+            fill_summary["executed_qty"] = float(order.get("executedQty", 0) or 0)
+            fill_summary["cum_quote"] = float(order.get("cumQuote", 0) or 0)
+            fill_summary["avg_price"] = float(order.get("avgPrice", 0) or order.get("price", 0) or 0)
+            if order_id:
+                try:
+                    trades = client.get_order_trades(symbol=symbol, order_id=int(order_id))
+                    if trades:
+                        total_comm = sum(float(t.get("commission", 0) or 0) for t in trades)
+                        total_realized = sum(float(t.get("realizedPnl", 0) or 0) for t in trades)
+                        fill_summary["commission"] = total_comm
+                        fill_summary["realized_pnl"] = total_realized
+                        fill_summary["trades"] = trades
+                except Exception as e:
+                    logger.warning("Could not fetch order trades for %s: %s", order_id, e)
+        except Exception as e:
+            logger.warning("Could not reconcile order %s on exchange: %s", order_id, e)
+        return fill_summary
+
     def _order_type_for_strategy(self, target_strategy: str) -> str:
         # Grid signals become working-limit orders; all others use market.
         if target_strategy.startswith("grid_futures_"):
@@ -524,6 +550,9 @@ class SignalQueueManager:
                 status = "DISPATCHED"
                 order_id = result.exchange_order_id or ""
                 client_order_id = queue_id[:32]
+                fill_summary = self._reconcile_order(client, clean_sym, queue_id, order_id)
+                criteria["execution"] = fill_summary
+
                 with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
                     cur.execute(
                         """
@@ -532,11 +561,12 @@ class SignalQueueManager:
                             execution_order_id = %s,
                             execution_client_order_id = %s,
                             topsis_score = %s,
+                            criteria_vector = %s,
                             dispatched_at = NOW(),
                             completed_at = NOW()
                         WHERE id = %s;
                         """,
-                        (order_id, client_order_id, topsis_score, queue_id),
+                        (order_id, client_order_id, topsis_score, Json(criteria), queue_id),
                     )
                     conn.commit()
 
@@ -547,6 +577,7 @@ class SignalQueueManager:
                     "queue_id": queue_id,
                     "order_id": order_id,
                     "client_order_id": client_order_id,
+                    "fill_summary": fill_summary,
                     "execution_result": result.to_dict(),
                 }
 

@@ -1541,7 +1541,7 @@ def register_paper_session_routes(
                     SELECT id, source_signal_id, producer, symbol, side, timeframe,
                            raw_score, topsis_score, target_strategy, status, rejection_reason,
                            execution_order_id, execution_client_order_id,
-                           created_at, dispatched_at, completed_at
+                           created_at, dispatched_at, completed_at, criteria_vector
                     FROM paper_trading.signal_queue
                     ORDER BY created_at DESC
                     LIMIT %s;
@@ -1549,6 +1549,7 @@ def register_paper_session_routes(
                     (_clamp_limit(limit, 50),),
                 )
                 for r in cur.fetchall():
+                    crit = r[16] if isinstance(r[16], dict) else json.loads(r[16] or "{}")
                     rows.append({
                         "id": str(r[0]),
                         "source_signal_id": r[1],
@@ -1566,6 +1567,7 @@ def register_paper_session_routes(
                         "created_at": r[13].isoformat() if r[13] else None,
                         "dispatched_at": r[14].isoformat() if r[14] else None,
                         "completed_at": r[15].isoformat() if r[15] else None,
+                        "criteria_vector": crit,
                     })
         except Exception as exc:
             logger.error("queue history query failed: %s", exc)

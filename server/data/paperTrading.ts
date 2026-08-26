@@ -564,9 +564,6 @@ setInterval(() => {
 }, 2500);
 
 const CANDIDATE_STRATEGIES_SET = new Set([
-  "candidate_5m_futures",
-  "candidate_10m_futures",
-  "candidate_15m_futures",
   "grid_futures_5x_v3",
   "grid_futures_10x_v3",
   "morning_glory_futures",
@@ -1168,12 +1165,7 @@ export function buildSampleSession(
 }
 
 export const PAPER_SESSIONS_MAP = new Map<string, PaperSessionState>([
-  ["control_5m_futures", buildSampleSession("control_5m_futures", "control", "5m", 5, 10000)],
-  ["candidate_5m_futures", buildSampleSession("candidate_5m_futures", "candidate", "5m", 10, 10000)],
-  ["control_10m_futures", buildSampleSession("control_10m_futures", "control", "10m", 5, 10000)],
-  ["candidate_10m_futures", buildSampleSession("candidate_10m_futures", "candidate", "10m", 10, 10000)],
-  ["control_15m_futures", buildSampleSession("control_15m_futures", "control", "15m", 5, 10000)],
-  ["candidate_15m_futures", buildSampleSession("candidate_15m_futures", "candidate", "15m", 10, 10000)],
+  ["rebalance_equal_weight_v1", buildSampleSession("rebalance_equal_weight_v1", "candidate", "5m", 1, 10000)],
   ["grid_futures_5x_v3", buildSampleSession("grid_futures_5x_v3", "candidate", "tick", 5, 5000)],
   ["grid_futures_10x_v3", buildSampleSession("grid_futures_10x_v3", "candidate", "tick", 10, 5000)],
   ["morning_glory_futures", buildSampleSession("morning_glory_futures", "candidate", "tick", 5, 5000)],

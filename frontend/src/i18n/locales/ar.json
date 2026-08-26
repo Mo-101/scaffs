@@ -113,8 +113,8 @@
     "disconnected": "فُقد الاتصال"
   },
   "welcome": {
-    "title": "Vibe-Trading",
-    "subtitle": "تداول بالذكاء مع فريقك من الوكلاء الماليين المحترفين",
+    "title": "Scaffs",
+    "subtitle": "تداول وأبحاث مالية مع فريق الوكلاء الأذكياء",
     "describePrompt": "صف استراتيجية تداول لتبدأ.",
     "tryExample": "جرّب مثالًا:",
     "categories": {

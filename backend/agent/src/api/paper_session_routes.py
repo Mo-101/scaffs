@@ -1,48 +1,124 @@
-"""Read-only HTTP routes for simulated paper-trading sessions.
+"""HTTP routes for simulated paper-trading sessions AND live Binance testnet orders.
 
-Mounted by ``agent/api_server.py`` via ``register_paper_session_routes(app)``.
+WARNING -- this module is no longer read-only. It was originally a read-only
+view over ``agent/paper_sessions/<id>/`` files, but it now also mounts
+``/paper-sessions/binance-testnet/*`` and ``/paper-sessions/signal-queue/*``,
+which submit real orders to the Binance USD-M matching engine (testnet host).
+Those orders have real order IDs and a real lifecycle; only the money is fake.
+Treat every route under those two prefixes as a mutating, network-facing
+execution surface, not as dashboard telemetry.
 
-These routes only ever read from ``agent/paper_sessions/<id>/`` -- the same
-files ``paper_session.py``'s CLI writes (``session.json`` static config,
-``book.json`` current positions/cash, ``marks.jsonl`` equity snapshots,
-``trades.jsonl`` executed trades). No route here starts, stops, or mutates a
-session; that stays a deliberate CLI/background-process action (see
-``paper_session.py``), not something the frontend can trigger. The frontend
-polls this for a live view of a session that is not the real-money
-live-runner (``src/live/``) and never places a broker order.
+The file-reading routes remain read-only: they only ever read
+``session.json`` / ``session_config.json`` (static config), ``book.json`` /
+``account.json`` (current positions/cash), ``marks.jsonl`` (equity snapshots)
+and ``trades.jsonl`` (executed trades). No route here starts or stops a
+worker; that stays a deliberate CLI/background-process action.
+
+LIVENESS CONTRACT
+-----------------
+Every session payload carries ``liveness_source``:
+
+  "database"      -- heartbeat/cycle evidence came from PostgreSQL.
+  "session_files" -- PostgreSQL was unreachable; figures are read off disk.
+
+Only ``liveness_source == "database"`` may ever be treated as proof that a
+worker is alive. Files on disk prove a file exists, not that a write landed.
+The ARM gate MUST require "database". See _load_futures_paper_session().
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
+
+logger = logging.getLogger(__name__)
 
 AuthDep = Callable[..., Any]
 
 PAPER_SESSIONS_DIR = Path(__file__).resolve().parents[2] / "paper_sessions"
 REGISTRY_PATH = Path(__file__).resolve().parents[2] / "config" / "paper_sessions_registry.json"
-_SAFE_SESSION_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_-]+$")
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _VALID_SCOPES = {"active", "archived", "all"}
 
+# Hard governance ceiling, in code, at module scope so it is importable and
+# testable. Env may only LOWER this, never raise it (see _effective_notional_cap).
+HARD_CAP_MAX_ORDER_USD = 100.0
+
+# Trading modes under which order submission is permitted at all.
+_PERMITTED_TRADING_MODES = {"testnet", "sandbox", "paper"}
+
+# Absolute quality floor. A producer that omits raw_score must FAIL this,
+# not sail past it on a permissive default.
+_ABSOLUTE_SCORE_FLOOR = 60.0
+
+_DB_CONNECT_TIMEOUT = 2
+_MAX_PAGE_LIMIT = 200
+
+
+def _paper_dsn() -> str:
+    """Single source of truth for the paper-trading DSN.
+
+    Note the database is ``mostar`` -- MoStar is the host/database platform.
+    Scaffs is the tenant application. Idim Ikang is the upstream producer.
+    """
+    return os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=mostar port=5433")
+
+
+def _clamp_limit(limit: int, default: int = 50) -> int:
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, _MAX_PAGE_LIMIT))
+
+
+def _as_aware_utc(value: Any) -> Optional[datetime]:
+    """Parse a timestamp into an aware UTC datetime, or None.
+
+    Naive timestamps are ASSUMED UTC rather than silently discarded -- the
+    previous code compared naive to aware, raised TypeError, swallowed it,
+    and quietly skipped the check.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
 
 def _postgres_account_view(account_id: str) -> dict[str, Any] | None:
-    """Read one account projection; every child-table lookup is account scoped."""
+    """Read one account projection; every child-table lookup is account scoped.
+
+    Returns None ONLY when the database genuinely has no such row or is
+    unreachable. The caller must not treat None as 'healthy' -- it downgrades
+    liveness_source to "session_files".
+    """
     try:
         from uuid import UUID
 
         import psycopg
 
         parsed_id = UUID(account_id)
-        dsn = os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=idim_ikang port=5433")
-        with psycopg.connect(dsn, connect_timeout=2) as connection, connection.cursor() as cursor:
+        with psycopg.connect(_paper_dsn(), connect_timeout=_DB_CONNECT_TIMEOUT) as connection, \
+                connection.cursor() as cursor:
             cursor.execute(
                 """SELECT a.strategy_id,a.worker_id,a.timeframe,a.mode,a.leverage,
                           a.initial_capital,a.cash_balance,a.margin_used,a.realized_pnl,
@@ -80,8 +156,10 @@ def _postgres_account_view(account_id: str) -> dict[str, Any] | None:
             # branch that answered (binance/okx/gate) -- never inferred here.
             "market_data_source": row[18],
             "last_cycle_completed_at": row[19].isoformat() if row[19] else None,
+            "telemetry_source": "database",
         }
-    except Exception:  # database telemetry must not take down the read-only dashboard
+    except Exception as exc:  # database telemetry must not take down the dashboard
+        logger.warning("postgres account view failed for %s: %s", account_id, exc)
         return None
 
 
@@ -104,6 +182,8 @@ def _load_registry() -> tuple[frozenset[str], frozenset[str], Optional[str]]:
         return frozenset(), frozenset(), "registry file not found"
     except json.JSONDecodeError as exc:
         return frozenset(), frozenset(), f"registry file is not valid JSON: {exc}"
+    except OSError as exc:
+        return frozenset(), frozenset(), f"registry file unreadable: {exc}"
 
     active = raw.get("active_sessions")
     archived = raw.get("archived_sessions")
@@ -133,26 +213,49 @@ def _registry_status(classification: str, marks: list[dict[str, Any]]) -> str:
     if classification == "unknown":
         return "unknown"
 
-    from paper_session import RUNTIME_STALE_AFTER, _parse_iso
+    from paper_session import RUNTIME_STALE_AFTER, _parse_iso  # noqa: F401
 
     if not marks:
         return "stale"
-    try:
-        age = datetime.now(timezone.utc) - _parse_iso(marks[-1]["timestamp"])
-    except Exception:
+    stamped = _as_aware_utc(marks[-1].get("timestamp"))
+    if stamped is None:
         return "stale"
-    return "running" if age < RUNTIME_STALE_AFTER else "stale"
+    return "running" if (datetime.now(timezone.utc) - stamped) < RUNTIME_STALE_AFTER else "stale"
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Read a JSONL ledger, tolerating a torn final line.
+
+    Returns (rows, malformed_count). A worker killed mid-write leaves a
+    partial line; the old version raised JSONDecodeError and took the whole
+    dashboard down with it. Malformed lines are counted and surfaced, never
+    silently dropped.
+    """
     if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return [], 0
+    rows: list[dict[str, Any]] = []
+    malformed = 0
+    try:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger.warning("could not read %s: %s", path, exc)
+        return [], 0
+    for line in raw_lines:
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            malformed += 1
+    if malformed:
+        logger.warning("%s contained %d malformed JSONL line(s)", path, malformed)
+    return rows, malformed
 
 
 def _summarize(session_dir: Path, classification: str = "unknown") -> dict[str, Any]:
-    # Always load from files for critical metrics — files are the source of truth.
-    from paper_session import verify_receipted_file, _check_heartbeat
+    # Always load from files for critical metrics -- files are the source of truth
+    # for THIS session shape (paper_session.py writes files, not Postgres).
+    from paper_session import verify_receipted_file
 
     session_path = session_dir / "session.json"
     session_intact = verify_receipted_file(session_path)
@@ -173,8 +276,8 @@ def _summarize(session_dir: Path, classification: str = "unknown") -> dict[str, 
         book = None
         book_intact = True
 
-    marks = _read_jsonl(session_dir / "marks.jsonl")
-    trades = _read_jsonl(session_dir / "trades.jsonl")
+    marks, marks_malformed = _read_jsonl(session_dir / "marks.jsonl")
+    trades, trades_malformed = _read_jsonl(session_dir / "trades.jsonl")
     latest = marks[-1] if marks else None
 
     # File-first equity: prefer latest mark, fall back to book cash.
@@ -204,11 +307,11 @@ def _summarize(session_dir: Path, classification: str = "unknown") -> dict[str, 
     trade_stats = compute_trade_stats(trades)
     status = compute_session_status(session_dir)
 
-    # Override runtime_status with heartbeat if available (more precise than marks age)
-    hb_status = _check_heartbeat(session_dir)
-    if hb_status == "running":
-        status["runtime_status"] = "running"
-        status["active"] = True
+    # REMOVED: the ``_check_heartbeat`` override that promoted runtime_status
+    # to "running" on the strength of a .heartbeat FILE. A file on disk is not
+    # evidence a write landed anywhere. This is the same defect that reported
+    # 9/9 workers fresh while PostgreSQL was offline and zero writes landed.
+    # If you need worker liveness, read it from the database.
 
     return {
         "session_id": session_dir.name,
@@ -225,8 +328,10 @@ def _summarize(session_dir: Path, classification: str = "unknown") -> dict[str, 
         "pnl": pnl,
         "return_pct": return_pct,
         "tampered": not session_intact or not book_intact,
+        "ledger_malformed_lines": marks_malformed + trades_malformed,
         "classification": classification,
         "status": _registry_status(classification, marks),
+        "liveness_source": "session_files",
         **status,
     }
 
@@ -286,6 +391,7 @@ def _summarize_db_session(session: dict, trades: list[dict], marks: list[dict]) 
         "max_drawdown": max_drawdown,
         "classification": "historical",
         "status": "archived",
+        "liveness_source": "database",
         **status,
     }
 
@@ -307,8 +413,7 @@ def _detect_session_schema(session_dir: Path) -> Optional[str]:
 def _futures_position_book(state: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """Normalize FuturesPaperEngine's positions-by-trade_id state into the
     same {positions: {symbol: signed_qty}, position_metadata: {...}} shape
-    paper_session.py's book.json already uses, so the frontend's existing
-    position-table/margin-allocation rendering needs no changes.
+    paper_session.py's book.json already uses.
     """
     if state is None:
         return None
@@ -342,12 +447,7 @@ def _futures_position_book(state: Optional[dict[str, Any]]) -> Optional[dict[str
 
 
 def _futures_trade_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
-    """Win/loss stats straight from FuturesPaperEngine's ClosedTrade rows.
-
-    Each row's net_pnl is already the final, fee/funding-inclusive result --
-    unlike paper_session.py's compute_trade_stats, no signed-position
-    cost-basis reconstruction across partial fills is needed here.
-    """
+    """Win/loss stats straight from FuturesPaperEngine's ClosedTrade rows."""
     if not trades:
         return {"overall": None, "by_symbol": {}}
     wins = [t for t in trades if t.get("net_pnl", 0.0) > 0]
@@ -360,6 +460,7 @@ def _futures_trade_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
         "avg_win": (gross_win / len(wins)) if wins else None,
         "avg_loss": (gross_loss / len(losses)) if losses else None,
+    }
     by_symbol: dict[str, list[dict[str, Any]]] = {}
     for t in trades:
         by_symbol.setdefault(t["symbol"], []).append(t)
@@ -412,8 +513,8 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else None
     book = _futures_position_book(state)
 
-    marks = _read_jsonl(session_dir / "marks.jsonl")
-    trades = _read_jsonl(session_dir / "trades.jsonl")
+    marks, marks_malformed = _read_jsonl(session_dir / "marks.jsonl")
+    trades, trades_malformed = _read_jsonl(session_dir / "trades.jsonl")
 
     def _mark_equity(m: dict[str, Any]) -> float:
         return float(m.get("current_equity", m.get("equity", 0.0)))
@@ -452,24 +553,37 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
     elif not marks:
         runtime_status = "stopped"
     else:
-        from paper_session import RUNTIME_STALE_AFTER, _parse_iso
+        from paper_session import RUNTIME_STALE_AFTER
 
-        try:
-            age = datetime.now(timezone.utc) - _parse_iso(marks[-1]["timestamp"])
-            runtime_status = "running" if age < RUNTIME_STALE_AFTER else "stopped"
-        except Exception:
+        stamped = _as_aware_utc(marks[-1].get("timestamp"))
+        if stamped is None:
             runtime_status = "stopped"
+        else:
+            age = datetime.now(timezone.utc) - stamped
+            runtime_status = "running" if age < RUNTIME_STALE_AFTER else "stopped"
 
-    status = "archived" if classification == "archived" else "unknown" if classification == "unknown" else runtime_status
+    status = (
+        "archived" if classification == "archived"
+        else "unknown" if classification == "unknown"
+        else runtime_status
+    )
 
     account_id = str(config.get("account_id", session_dir.name))
     database_account = _postgres_account_view(account_id)
+
+    # --- LIVENESS SOURCE -----------------------------------------------------
+    # When Postgres answers, telemetry is authoritative. When it does not, we
+    # still render figures off disk so the dashboard is not blank -- but the
+    # payload says so, and a filesystem .heartbeat is NEVER promoted to
+    # "running". That promotion is what made 9/9 workers appear fresh while
+    # the database was down and zero writes had landed.
     if database_account is None:
+        liveness_source = "session_files"
         heartbeat_path = session_dir / ".heartbeat"
         try:
-            last_heartbeat = heartbeat_path.read_text(encoding="utf-8").strip() or None
+            last_heartbeat_file = heartbeat_path.read_text(encoding="utf-8").strip() or None
         except OSError:
-            last_heartbeat = None
+            last_heartbeat_file = None
         database_account = {
             "account_id": account_id,
             "strategy_id": config.get("strategy_id"),
@@ -487,29 +601,34 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
             "fees": (state or {}).get("total_fees", 0.0) + (state or {}).get("total_liquidation_fees", 0.0),
             "current_equity": equity,
             "ledger_status": (state or {}).get("status", "OK"),
-            "last_heartbeat": last_heartbeat,
+            # Named to make its provenance unmistakable at the call site.
+            "last_heartbeat_file": last_heartbeat_file,
+            "last_heartbeat": None,          # no DB heartbeat exists
             "last_trade": trades[-1].get("exit_time") if trades else None,
             "risk_state": {},
             "open_positions": len((state or {}).get("positions", {})),
             "market_data_source": (latest or {}).get("market_data_source"),
-            "last_cycle_completed_at": (latest or {}).get("timestamp"),
+            "last_cycle_completed_at": None,  # unproven without the database
             "telemetry_source": "session_files",
+            "database_available": False,
         }
-    if database_account and database_account.get("last_heartbeat"):
-        try:
-            heartbeat_at = datetime.fromisoformat(database_account["last_heartbeat"])
+    else:
+        liveness_source = "database"
+        database_account["database_available"] = True
+        # Only a DATABASE heartbeat may promote a session to "running".
+        heartbeat_at = _as_aware_utc(database_account.get("last_heartbeat"))
+        if heartbeat_at is not None:
             if datetime.now(timezone.utc) - heartbeat_at <= timedelta(seconds=45):
                 runtime_status = "running"
-                status = "running"
-        except (TypeError, ValueError):
-            pass
+                if classification not in ("archived", "unknown"):
+                    status = "running"
 
     session_view = {
         "strategy_type": config.get("strategy_type", "futures_paper_engine"),
         "account_id": account_id,
-        "strategy_id": database_account.get("strategy_id") if database_account else None,
-        "worker_id": database_account.get("worker_id") if database_account else None,
-        "timeframe": database_account.get("timeframe") if database_account else None,
+        "strategy_id": database_account.get("strategy_id"),
+        "worker_id": database_account.get("worker_id"),
+        "timeframe": database_account.get("timeframe"),
         "symbols": symbols,
         "initial_cash": initial_cash,
         "accounting_status": (state or {}).get("status", "OK"),
@@ -522,6 +641,7 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         "config_status": config.get("status"),
     }
 
+    # pyrefly: ignore [missing-import]
     from paper_runtime.metrics import compute_risk_metrics
     equity_points = []
     for m in marks:
@@ -539,8 +659,12 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         import uuid
         txn_id = uuid.uuid4().hex[:16]
 
-    observed_at = (state or {}).get("updated_at") or (latest["timestamp"] if latest else datetime.now(timezone.utc).isoformat())
-    market_source = (latest or {}).get("market_data_source") or database_account.get("market_data_source") or "binance"
+    observed_at = (
+        (state or {}).get("updated_at")
+        or (latest["timestamp"] if latest else datetime.now(timezone.utc).isoformat())
+    )
+    # Never default the market source to a venue name we did not observe.
+    market_source = (latest or {}).get("market_data_source") or database_account.get("market_data_source")
 
     wallet_balance = float((state or {}).get("wallet_balance", initial_cash))
     reserved_margin = float((state or {}).get("reserved_margin", 0.0))
@@ -596,6 +720,7 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         "status": (state or {}).get("status", "OK"),
         "runtime_status": runtime_status,
         "active": runtime_status == "running",
+        "liveness_source": liveness_source,
     }
 
     return {
@@ -608,7 +733,7 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         "marks": marks,
         "analytics": analytics_envelope,
         "health": health_envelope,
-        
+
         "session_id": session_dir.name,
         "session": session_view,
         "book": book,
@@ -622,46 +747,49 @@ def _load_futures_paper_session(session_dir: Path, classification: str = "unknow
         "equity": equity,
         "pnl": pnl,
         "return_pct": return_pct,
+        "ledger_malformed_lines": marks_malformed + trades_malformed,
         "classification": classification,
         "status": status,
         "runtime_status": runtime_status,
         "active": runtime_status == "running",
+        "liveness_source": liveness_source,
         "database_account": database_account,
     }
+
+
+def _effective_notional_cap() -> float:
+    """Env may only LOWER the in-code ceiling, never raise it.
+
+    A malformed or absent MAX_POSITION_USD falls back to the in-code cap --
+    it never widens it. .env was changed unattributed once already; the code
+    ceiling is the control that survives that.
+    """
+    raw = os.environ.get("MAX_POSITION_USD")
+    if raw is None:
+        return HARD_CAP_MAX_ORDER_USD
+    try:
+        env_max = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("MAX_POSITION_USD=%r is not a number; using in-code cap", raw)
+        return HARD_CAP_MAX_ORDER_USD
+    if env_max <= 0:
+        logger.warning("MAX_POSITION_USD=%r is not positive; using in-code cap", raw)
+        return HARD_CAP_MAX_ORDER_USD
+    return min(HARD_CAP_MAX_ORDER_USD, env_max)
 
 
 def register_paper_session_routes(
     app: FastAPI,
     require_auth: Optional[AuthDep] = None,
 ) -> None:
-    # Trigger legacy state migration for all sessions on startup
-    try:
-        from migration import migrate_all_sessions
-        migrate_all_sessions(PAPER_SESSIONS_DIR)
-    except Exception as e:
-        print(f"Failed to run legacy session migrations: {e}")
+    """Mount the paper-session routes onto ``app``.
 
-    auth_dependencies = [Depends(require_auth)] if require_auth is not None else []
-
-    @app.get("/paper-trading/notifications", dependencies=auth_dependencies)
-    async def get_paper_trading_notifications(after: Optional[str] = None):
-        """Read-only notification feed for paper-dashboard toast polling."""
-        try:
-            import psycopg
-            dsn = os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=idim_ikang port=5433")
-            query = """SELECT id,worker_id,event_type,severity,title,message,created_at
-                         FROM paper_trading.trading_notifications
-                         WHERE (%s::timestamptz IS NULL OR created_at > %s::timestamptz)
-                         ORDER BY created_at ASC LIMIT 100"""
-            with psycopg.connect(dsn, connect_timeout=2) as conn, conn.cursor() as cur:
-                cur.execute(query, (after, after))
-                rows = cur.fetchall()
-            return [{"id": str(r[0]), "worker_id": r[1], "event_type": r[2],
-                     "severity": r[3], "title": r[4], "message": r[5],
-                     "created_at": r[6].isoformat()} for r in rows]
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail="paper notification feed unavailable") from exc
-    """Mount the read-only paper-session routes onto ``app``."""
+    ``require_auth`` is resolved BEFORE any route is declared, so every route
+    in this module carries the same dependency. Previously the notifications
+    route was declared before resolution and shipped with an empty dependency
+    list whenever the caller omitted require_auth -- an unauthenticated hole
+    in an otherwise authenticated module.
+    """
     if require_auth is None:
         import sys as _sys
 
@@ -673,7 +801,36 @@ def register_paper_session_routes(
             )
         require_auth = host.require_auth
 
-    @app.get("/paper-sessions", dependencies=[Depends(require_auth)])
+    auth_dependencies = [Depends(require_auth)]
+
+    # Trigger legacy state migration for all sessions on startup
+    try:
+        # pyrefly: ignore [missing-import]
+        from migration import migrate_all_sessions
+        migrate_all_sessions(PAPER_SESSIONS_DIR)
+    except Exception as exc:
+        logger.error("Failed to run legacy session migrations: %s", exc)
+
+    @app.get("/paper-trading/notifications", dependencies=auth_dependencies)
+    async def get_paper_trading_notifications(after: Optional[str] = None):
+        """Read-only notification feed for paper-dashboard toast polling."""
+        try:
+            import psycopg
+            query = """SELECT id,worker_id,event_type,severity,title,message,created_at
+                         FROM paper_trading.trading_notifications
+                         WHERE (%s::timestamptz IS NULL OR created_at > %s::timestamptz)
+                         ORDER BY created_at ASC LIMIT 100"""
+            with psycopg.connect(_paper_dsn(), connect_timeout=_DB_CONNECT_TIMEOUT) as conn, conn.cursor() as cur:
+                cur.execute(query, (after, after))
+                rows = cur.fetchall()
+            return [{"id": str(r[0]), "worker_id": r[1], "event_type": r[2],
+                     "severity": r[3], "title": r[4], "message": r[5],
+                     "created_at": r[6].isoformat()} for r in rows]
+        except Exception as exc:
+            logger.warning("notification feed unavailable: %s", exc)
+            raise HTTPException(status_code=503, detail="paper notification feed unavailable") from exc
+
+    @app.get("/paper-sessions", dependencies=auth_dependencies)
     async def list_paper_sessions(scope: str = "active"):
         """List paper sessions, including backtest sessions stored in the database.
 
@@ -684,30 +841,24 @@ def register_paper_session_routes(
         - ``archived`` -- registry-listed archived sessions only.
         - ``all`` -- both groups.
 
-        A filesystem session not covered by the registry (e.g. a new
-        strategy family the registry predates) is classified "unknown" and
-        is never excluded by scope -- only registry-covered sessions are
-        scope-filtered, so this stays additive rather than hiding sessions
-        nobody has classified yet. DB-only sessions are the exception:
-        historical, never registry-governed, so scope never hides them
-        either, but they're only merged in on ``scope=all``.
+        A filesystem session not covered by the registry is classified
+        "unknown" and is never excluded by scope. DB-only sessions are
+        historical and only merged in on ``scope=all``.
 
-        If the registry file is missing or malformed, this fails closed:
-        every filesystem/db session is skipped and an empty list is
-        returned, rather than risk showing a retired session as active.
+        Fails closed: if the registry is missing or malformed, returns an
+        empty list rather than risk showing a retired session as active.
         """
         if scope not in _VALID_SCOPES:
             raise HTTPException(status_code=400, detail=f"scope must be one of: {sorted(_VALID_SCOPES)}")
 
         active_ids, archived_ids, registry_error = _load_registry()
         if registry_error is not None:
+            logger.warning("paper session registry unusable: %s", registry_error)
             return []
 
         results = []
         if not PAPER_SESSIONS_DIR.exists():
             return []
-        # Filesystem sessions -- either paper_session.py's (session.json) or
-        # FuturesPaperEngine's (session_config.json) manifest shape.
         existing_ids = set()
         candidate_dirs = sorted(
             (d for d in PAPER_SESSIONS_DIR.iterdir() if d.is_dir() and not d.name.startswith("_")),
@@ -722,16 +873,29 @@ def register_paper_session_routes(
             classification = _classify_session(d.name, active_ids, archived_ids)
             if classification != "unknown" and scope != "all" and classification != scope:
                 continue
-            if schema == "paper_session":
-                results.append(_summarize(d, classification=classification))
-            else:
-                results.append(_load_futures_paper_session(d, classification=classification))
+            try:
+                if schema == "paper_session":
+                    results.append(_summarize(d, classification=classification))
+                else:
+                    results.append(_load_futures_paper_session(d, classification=classification))
+            except Exception as exc:
+                # One corrupt session must not blank the whole dashboard, but
+                # it must be VISIBLE rather than silently omitted.
+                logger.error("failed to summarize session %s: %s", d.name, exc)
+                results.append({
+                    "session_id": d.name,
+                    "classification": classification,
+                    "status": "error",
+                    "runtime_status": "error",
+                    "active": False,
+                    "liveness_source": "session_files",
+                    "error": str(exc),
+                })
 
-        # DB-only backtests are internal-review data and only belong to the
-        # explicit all-sessions scope, never the active dashboard.
         try:
             if scope != "all":
                 return results
+            # pyrefly: ignore [missing-import]
             from paper_store import get_store
             store = get_store()
             db_sessions = store.list_sessions(strategy_type="per_symbol_isolated_backtest")
@@ -743,21 +907,18 @@ def register_paper_session_routes(
                 marks = store.list_marks(sid)
                 results.append(_summarize_db_session(s, trades, marks))
                 existing_ids.add(sid)
-        except Exception:
-            # If paper_store isn't available or fails, just return filesystem sessions
-            pass
+        except Exception as exc:
+            logger.warning("paper_store DB sessions unavailable: %s", exc)
 
         return results
 
-    @app.get("/paper-sessions/registry-status", dependencies=[Depends(require_auth)])
+    @app.get("/paper-sessions/registry-status", dependencies=auth_dependencies)
     async def get_paper_session_registry_status():
-        """Diagnostics for the active/archived registry itself, separate from
-        the main listing so a broken registry is visible rather than just
-        silently emptying /paper-sessions.
-        """
+        """Diagnostics for the active/archived registry itself."""
         active_ids, archived_ids, registry_error = _load_registry()
         if registry_error is not None:
-            return {"registry_status": "error", "detail": registry_error, "active_sessions": [], "archived_sessions": []}
+            return {"registry_status": "error", "detail": registry_error,
+                    "active_sessions": [], "archived_sessions": []}
         return {
             "registry_status": "ok",
             "detail": None,
@@ -765,26 +926,31 @@ def register_paper_session_routes(
             "archived_sessions": sorted(archived_ids),
         }
 
-    @app.get("/paper-sessions/provider-health", dependencies=[Depends(require_auth)])
+    @app.get("/paper-sessions/provider-health", dependencies=auth_dependencies)
     async def get_paper_provider_health():
-        """Probe every credential-free market provider independently."""
+        """Probe every credential-free market provider independently.
+
+        NOTE: reachability is not liveness. A provider answering here says
+        nothing about whether a feed is delivering ticks to a worker.
+        """
+        # pyrefly: ignore [missing-import]
         from market_provider_health import get_market_provider_health
 
         return await run_in_threadpool(get_market_provider_health)
 
-    @app.get("/paper-sessions/decision-health", dependencies=[Depends(require_auth)])
+    @app.get("/paper-sessions/decision-health", dependencies=auth_dependencies)
     async def get_paper_decision_health():
         """Return the strategy-to-fill funnel from committed cycle evidence.
 
-        This is deliberately separate from process and provider health. A
-        worker can be alive, receive a fresh quote, and still have no valid
-        strategy candidate or be blocked by an execution policy.
+        Database-only by design. If PostgreSQL is unreachable this returns
+        status="error" with an empty worker list -- it never falls back to
+        counting files on disk.
         """
         try:
             import psycopg
 
-            dsn = os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=idim_ikang port=5433")
-            with psycopg.connect(dsn, connect_timeout=2) as connection, connection.cursor() as cursor:
+            with psycopg.connect(_paper_dsn(), connect_timeout=_DB_CONNECT_TIMEOUT) as connection, \
+                    connection.cursor() as cursor:
                 cursor.execute(
                     """WITH recent AS (
                            SELECT *
@@ -816,7 +982,9 @@ def register_paper_session_routes(
                 )
                 rows = cursor.fetchall()
         except Exception as exc:
-            return {"status": "error", "detail": str(exc), "window_hours": 24, "workers": []}
+            logger.error("decision-health query failed: %s", exc)
+            return {"status": "error", "detail": str(exc), "window_hours": 24,
+                    "workers": [], "liveness_source": "database"}
 
         workers = []
         for row in rows:
@@ -837,25 +1005,24 @@ def register_paper_session_routes(
                     "positions_closed": int(row[12]),
                 },
             })
-        return {"status": "ok", "detail": None, "window_hours": 24, "workers": workers}
+        return {"status": "ok", "detail": None, "window_hours": 24,
+                "workers": workers, "liveness_source": "database"}
 
-    @app.get("/paper-sessions/shadow-comparison", dependencies=[Depends(require_auth)])
+    @app.get("/paper-sessions/shadow-comparison", dependencies=auth_dependencies)
     async def get_shadow_comparison():
-        """Pair up control/$-threshold-candidate sessions by rebalance regimen.
-
-        Only schema-v2 sessions with session_role control/candidate
-        participate -- historical (schema-v1) sessions are never paired in.
-        """
+        """Pair up control/candidate sessions by rebalance regimen."""
         if not PAPER_SESSIONS_DIR.exists():
             return []
 
+        # pyrefly: ignore [missing-import]
         from paper_session import build_shadow_comparison
 
         return await run_in_threadpool(build_shadow_comparison, PAPER_SESSIONS_DIR)
 
-    @app.get("/paper-sessions/shadow-comparison.csv", dependencies=[Depends(require_auth)])
+    @app.get("/paper-sessions/shadow-comparison.csv", dependencies=auth_dependencies)
     async def get_shadow_comparison_csv():
         """Flat CSV of the same shadow-comparison rows, one per regimen."""
+        # pyrefly: ignore [missing-import]
         from paper_session import build_shadow_comparison
 
         comparisons = await run_in_threadpool(build_shadow_comparison, PAPER_SESSIONS_DIR)
@@ -910,28 +1077,544 @@ def register_paper_session_routes(
             headers={"Content-Disposition": "attachment; filename=shadow-comparison.csv"},
         )
 
-    @app.get("/paper-sessions/{session_id}", dependencies=[Depends(require_auth)])
+    # -------------------------------------------------------------------------
+    # Binance USD-M Futures Testnet integration -- LIVE MATCHING ENGINE.
+    # Registered BEFORE /paper-sessions/{session_id} so a literal path can
+    # never be shadowed by the wildcard as routes are added over time.
+    # -------------------------------------------------------------------------
+
+    @app.get("/paper-sessions/binance-testnet/status", dependencies=auth_dependencies)
+    async def get_binance_testnet_status():
+        """Check Binance Futures Testnet connectivity and credential validity."""
+        from src.trading.connectors.binance.futures_sdk import (
+            BinanceFuturesConfig,
+            get_binance_futures_client,
+        )
+
+        cfg = BinanceFuturesConfig.from_env()
+        configured = bool(cfg.api_key and cfg.api_secret)
+
+        client = get_binance_futures_client(cfg)
+        t0 = time.time()
+        try:
+            server_time = await run_in_threadpool(client.get_server_time)
+            latency_ms = round((time.time() - t0) * 1000, 2)
+            balance = None
+            balance_error = None
+            if configured:
+                try:
+                    balances = await run_in_threadpool(client.get_account_balance)
+                    usdt = next((b for b in balances if b.get("asset") == "USDT"), None)
+                    balance = float(usdt.get("balance", 0.0)) if usdt else 0.0
+                except Exception as exc:
+                    # Report the balance failure instead of collapsing the whole
+                    # status probe into ok:false.
+                    logger.warning("testnet balance fetch failed: %s", exc)
+                    balance_error = str(exc)
+
+            return {
+                "ok": True,
+                "configured": configured,
+                "host": cfg.base_url,
+                "is_testnet": cfg.is_testnet,
+                "latency_ms": latency_ms,
+                "server_time": server_time,
+                "usdt_balance": balance,
+                "balance_error": balance_error,
+            }
+        except Exception as exc:
+            logger.warning("testnet status probe failed: %s", exc)
+            return {
+                "ok": False,
+                "configured": configured,
+                "host": cfg.base_url,
+                "is_testnet": cfg.is_testnet,
+                "error": str(exc),
+            }
+
+    @app.get("/paper-sessions/binance-testnet/balance", dependencies=auth_dependencies)
+    async def get_binance_testnet_balance():
+        """Retrieve live asset balances from the Binance Futures Testnet account."""
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+
+        client = get_binance_futures_client()
+        try:
+            balances = await run_in_threadpool(client.get_account_balance)
+            return {"ok": True, "balances": balances}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Binance Testnet balance fetch failed: {exc}") from exc
+
+    @app.get("/paper-sessions/binance-testnet/positions", dependencies=auth_dependencies)
+    async def get_binance_testnet_positions(symbol: Optional[str] = Query(None)):
+        """Retrieve active open positions from Binance Futures Testnet."""
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+
+        client = get_binance_futures_client()
+        try:
+            positions = await run_in_threadpool(client.get_positions, symbol)
+            return {"ok": True, "positions": positions}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Binance Testnet positions fetch failed: {exc}") from exc
+
+    @app.post("/paper-sessions/binance-testnet/configure-account", dependencies=auth_dependencies)
+    async def configure_binance_testnet_account(payload: dict[str, Any] = Body(...)):
+        """Governance endpoint for symbol leverage and margin mode.
+
+        Deliberately decoupled from order placement so account configuration
+        can never be mutated as a side effect of submitting an order.
+        """
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+
+        client = get_binance_futures_client()
+        symbol = payload.get("symbol")
+        leverage = payload.get("leverage")
+        margin_type = payload.get("margin_type")
+
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        if leverage is None and margin_type is None:
+            raise HTTPException(status_code=400, detail="provide leverage and/or margin_type")
+
+        results: dict[str, Any] = {}
+        try:
+            if leverage is not None:
+                results["leverage"] = await run_in_threadpool(client.set_leverage, symbol, int(leverage))
+            if margin_type is not None:
+                results["margin_type"] = await run_in_threadpool(client.set_margin_type, symbol, str(margin_type))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid leverage/margin_type: {exc}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Account configuration failed: {exc}") from exc
+
+        logger.info("account configured symbol=%s results=%s", symbol, results)
+        return {"ok": True, "symbol": symbol, "results": results}
+
+    @app.post("/paper-sessions/binance-testnet/order", dependencies=auth_dependencies)
+    async def place_binance_testnet_order(payload: dict[str, Any] = Body(...)):
+        """Place an order on the Binance Futures Testnet matching engine.
+
+        Governance chain, in order, all fail-CLOSED:
+          1. leverage/margin mutations rejected (use configure-account)
+          2. TRADING_MODE must be testnet/sandbox/paper
+          3. quantity must parse and be positive
+          4. a reference price MUST be obtainable -- no price, no order
+          5. notional must sit under min(HARD_CAP_MAX_ORDER_USD, MAX_POSITION_USD)
+        """
+        from src.trading.connectors.binance.futures_sdk import (
+            get_binance_futures_client,
+            BinanceConfig,
+        )
+
+        if "leverage" in payload or "margin_type" in payload:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Account leverage/margin mutations are decoupled from order "
+                    "placement. Use POST /paper-sessions/binance-testnet/configure-account."
+                ),
+            )
+
+        # Mode-specific, fail-closed configuration gate. This also validates
+        # credentials and host.
+        try:
+            binance_cfg = BinanceConfig.from_env()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=403, detail=f"Binance configuration rejected: {exc}") from exc
+
+        if binance_cfg.mode != "testnet":
+            raise HTTPException(
+                status_code=403,
+                detail=f"This endpoint only accepts Binance testnet mode, current mode is '{binance_cfg.mode}'.",
+            )
+
+        # Optional worker/strategy binding for signals routed through the queue.
+        worker_id = payload.get("worker_id") or payload.get("target_strategy")
+        if worker_id:
+            from src.trading.strategy_binding import is_allowed_worker
+            if not is_allowed_worker(worker_id):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Worker '{worker_id}' is not in the canonical allowlist.",
+                )
+
+        client = get_binance_futures_client()
+        symbol = payload.get("symbol")
+        side = payload.get("side")
+        order_type = str(payload.get("order_type", "MARKET")).upper()
+        quantity = payload.get("quantity")
+        price = payload.get("price")
+        client_order_id = payload.get("client_order_id")
+        intent_id = payload.get("intent_id")
+        signal_id = payload.get("signal_id")
+        session_id = payload.get("session_id")
+        cycle_seq = payload.get("cycle_seq")
+
+        if not symbol or not side or quantity is None:
+            raise HTTPException(status_code=400, detail="symbol, side, and quantity are required")
+
+        try:
+            qty_float = float(quantity)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid quantity: {exc}") from exc
+        if qty_float <= 0:
+            raise HTTPException(status_code=400, detail="Invalid quantity: must be positive")
+
+        limit_price: Optional[float] = None
+        if price is not None:
+            try:
+                limit_price = float(price)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid price: {exc}") from exc
+            if limit_price <= 0:
+                raise HTTPException(status_code=400, detail="Invalid price: must be positive")
+
+        # --- FAIL-CLOSED NOTIONAL CAP ---------------------------------------
+        # The previous version fell back to est_price = 0.0 on a ticker
+        # failure and then evaluated `qty * (est_price or 1.0)`, pricing every
+        # asset at $1. A 0.01 BTC order scored $0.01 of notional and sailed
+        # under the $100 ceiling. If we cannot price the order, we do not
+        # send the order.
+        effective_limit = _effective_notional_cap()
+
+        reference_price = limit_price
+        if reference_price is None:
+            try:
+                fetched = await run_in_threadpool(client.get_ticker_price, symbol)
+                reference_price = float(fetched)
+            except Exception as exc:
+                logger.error("notional cap could not price %s: %s", symbol, exc)
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"Reference price for {symbol} unavailable ({exc}); order rejected. "
+                        "The notional cap fails closed -- an unpriceable order is never sent."
+                    ),
+                ) from exc
+
+        if reference_price <= 0:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Reference price for {symbol} was non-positive ({reference_price}); order rejected.",
+            )
+
+        order_notional = qty_float * reference_price
+        if order_notional > effective_limit:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Order notional (${order_notional:.2f} USD) exceeds hard governance "
+                    f"limit (${effective_limit:.2f} USD)."
+                ),
+            )
+
+        logger.info(
+            "dispatching testnet order symbol=%s side=%s type=%s qty=%s notional=%.2f "
+            "limit=%.2f intent_id=%s signal_id=%s",
+            symbol, side, order_type, qty_float, order_notional, effective_limit,
+            intent_id, signal_id,
+        )
+
+        try:
+            order_res = await run_in_threadpool(
+                client.place_order,
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=qty_float,
+                price=limit_price,
+                client_order_id=client_order_id,
+                intent_id=intent_id,
+                signal_id=signal_id,
+                session_id=session_id,
+                cycle_seq=cycle_seq,
+            )
+        except Exception as exc:
+            logger.error("testnet order execution error symbol=%s: %s", symbol, exc)
+            raise HTTPException(status_code=502, detail=f"Binance Testnet order execution error: {exc}") from exc
+
+        return {
+            "ok": True,
+            "order": order_res,
+            "governance": {
+                "reference_price": reference_price,
+                "order_notional_usd": round(order_notional, 8),
+                "effective_limit_usd": effective_limit,
+                "hard_cap_usd": HARD_CAP_MAX_ORDER_USD,
+                "trading_mode": trading_mode,
+            },
+        }
+
+    @app.post("/paper-sessions/switch-testnet", dependencies=auth_dependencies)
+    async def switch_testnet_mode(payload: dict[str, Any] = Body(default={})):
+        """Audit paper session status and verify Binance Testnet connectivity.
+
+        Reports readiness. Does not change any mode -- the name is historical.
+        """
+        from src.trading.connectors.binance.futures_sdk import (
+            BinanceFuturesConfig,
+            get_binance_futures_client,
+        )
+
+        cfg = BinanceFuturesConfig.from_env()
+        client = get_binance_futures_client(cfg)
+        testnet_reachable = False
+        server_time = None
+        try:
+            server_time = await run_in_threadpool(client.get_server_time)
+            testnet_reachable = True
+        except Exception as exc:
+            logger.warning("Testnet connectivity check failed during switch: %s", exc)
+
+        ready = testnet_reachable and bool(cfg.api_key and cfg.api_secret)
+        return {
+            "ok": True,
+            "ready": ready,
+            "testnet_reachable": testnet_reachable,
+            "server_time": server_time,
+            "configured": bool(cfg.api_key and cfg.api_secret),
+            "mode": "testnet" if ready else "paper",
+            "message": "Binance Futures Testnet connected and ready for order execution."
+            if ready
+            else "Binance Testnet reachable in demo mode. Configure API keys in Settings "
+                 "to execute live testnet orders.",
+        }
+
+    # --- Signal Priority Queue & Multi-Strategy Router ------------------------
+
+    @app.post("/paper-sessions/signal-queue/enqueue", dependencies=auth_dependencies)
+    async def enqueue_signal_endpoint(payload: dict[str, Any] = Body(...)):
+        """Enqueue a candidate signal from Idim Ikang or the Scaffs picker.
+
+        ``raw_score`` is REQUIRED. The previous default of 65.0 sat above the
+        60.0 absolute floor, so a producer that omitted a score was admitted
+        automatically -- the quality gate defaulted open.
+        """
+        from src.trading.signal_queue import SignalQueueManager
+
+        symbol = payload.get("symbol")
+        side = payload.get("side")
+        if not symbol or not side:
+            raise HTTPException(status_code=400, detail="Missing required 'symbol' or 'side' fields.")
+
+        if payload.get("raw_score") is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'raw_score' is required (absolute floor {_ABSOLUTE_SCORE_FLOOR}); "
+                       "an unscored signal is never admitted by default.",
+            )
+        try:
+            raw_score = float(payload["raw_score"])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid raw_score: {exc}") from exc
+
+        producer = str(payload.get("producer", "scaffs_picker"))
+        timeframe = str(payload.get("timeframe", "5m"))
+        source_signal_id = payload.get("source_signal_id")
+        criteria = payload.get("criteria_vector") or {}
+        if not isinstance(criteria, dict):
+            raise HTTPException(status_code=400, detail="criteria_vector must be an object")
+        try:
+            ttl = int(payload.get("ttl_seconds", 300))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid ttl_seconds: {exc}") from exc
+        if ttl <= 0:
+            raise HTTPException(status_code=400, detail="ttl_seconds must be positive")
+
+        mgr = SignalQueueManager()
+        res = await run_in_threadpool(
+            mgr.enqueue_signal,
+            symbol=symbol,
+            side=side,
+            producer=producer,
+            timeframe=timeframe,
+            raw_score=raw_score,
+            source_signal_id=source_signal_id,
+            criteria_vector=criteria,
+            ttl_seconds=ttl,
+        )
+
+        if not res.get("ok"):
+            raise HTTPException(status_code=422, detail=res)
+        return res
+
+    @app.get("/paper-sessions/signal-queue/pending", dependencies=auth_dependencies)
+    async def get_pending_queue_endpoint(limit: int = 20):
+        """Active unexpired signals, ranked by TOPSIS closeness coefficient.
+
+        The coefficient is RELATIVE to the current batch. A score of 0.9 means
+        'closest to ideal among what is queued right now', not '90% confidence'.
+        Absolute admission is the enqueue-time floor, not this ranking.
+        """
+        from src.trading.signal_queue import SignalQueueManager
+
+        mgr = SignalQueueManager()
+        ranked = await run_in_threadpool(mgr.get_pending_batch, limit=_clamp_limit(limit, 20))
+        return {
+            "ok": True,
+            "count": len(ranked),
+            "signals": ranked,
+            "ranking_note": "topsis_score is relative to this batch, not an absolute probability",
+        }
+
+    @app.post("/paper-sessions/signal-queue/dispatch", dependencies=auth_dependencies)
+    async def dispatch_queued_signal_endpoint(payload: dict[str, Any] = Body(...)):
+        """Dispatch one queued signal through collision checks to the matching engine."""
+        from src.trading.signal_queue import SignalQueueManager
+
+        queue_id = payload.get("queue_id")
+        if not queue_id:
+            raise HTTPException(status_code=400, detail="Missing required 'queue_id' field.")
+
+        try:
+            quantity = float(payload["quantity"]) if payload.get("quantity") is not None else None
+            notional_usd = float(payload.get("notional_usd", 25.0))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid quantity/notional_usd: {exc}") from exc
+
+        # Same ceiling as the direct order route -- the queue is not a bypass.
+        effective_limit = _effective_notional_cap()
+        if notional_usd <= 0:
+            raise HTTPException(status_code=400, detail="notional_usd must be positive")
+        if notional_usd > effective_limit:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Requested notional (${notional_usd:.2f}) exceeds hard governance "
+                       f"limit (${effective_limit:.2f}).",
+            )
+
+        mgr = SignalQueueManager()
+        try:
+            return await run_in_threadpool(
+                mgr.dispatch_queued_signal,
+                queue_id=queue_id,
+                quantity=quantity,
+                notional_usd=notional_usd,
+            )
+        except Exception as exc:
+            logger.error("queue dispatch failed queue_id=%s: %s", queue_id, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/paper-sessions/signal-queue/history", dependencies=auth_dependencies)
+    async def get_queue_history_endpoint(limit: int = 50):
+        """Recent queue transitions across all statuses."""
+        from src.trading.signal_queue import SignalQueueManager
+        import psycopg
+
+        mgr = SignalQueueManager()
+        rows = []
+        try:
+            with psycopg.connect(mgr.dsn, connect_timeout=_DB_CONNECT_TIMEOUT) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, source_signal_id, producer, symbol, side, timeframe,
+                           raw_score, topsis_score, target_strategy, status, rejection_reason,
+                           execution_order_id, execution_client_order_id,
+                           created_at, dispatched_at, completed_at
+                    FROM paper_trading.signal_queue
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (_clamp_limit(limit, 50),),
+                )
+                for r in cur.fetchall():
+                    rows.append({
+                        "id": str(r[0]),
+                        "source_signal_id": r[1],
+                        "producer": r[2],
+                        "symbol": r[3],
+                        "side": r[4],
+                        "timeframe": r[5],
+                        "raw_score": float(r[6]) if r[6] is not None else None,
+                        "topsis_score": float(r[7]) if r[7] is not None else None,
+                        "target_strategy": r[8],
+                        "status": r[9],
+                        "rejection_reason": r[10],
+                        "execution_order_id": r[11],
+                        "execution_client_order_id": r[12],
+                        "created_at": r[13].isoformat() if r[13] else None,
+                        "dispatched_at": r[14].isoformat() if r[14] else None,
+                        "completed_at": r[15].isoformat() if r[15] else None,
+                    })
+        except Exception as exc:
+            logger.error("queue history query failed: %s", exc)
+            raise HTTPException(status_code=503, detail="signal queue history unavailable") from exc
+        return {"ok": True, "count": len(rows), "history": rows}
+
+    @app.post("/paper-sessions/signal-queue/sync-idim", dependencies=auth_dependencies)
+    async def sync_idim_signals_endpoint(payload: dict[str, Any] = Body(default={})):
+        """Pull the live Idim Ikang stream into the Scaffs priority queue.
+
+        ``auto_dispatch`` fires orders at the matching engine with no further
+        human step. It is therefore gated behind an explicit environment flag,
+        not an HTTP body field -- a request body must not be able to turn on
+        autonomous execution.
+        """
+        from src.trading.idim_feed_bridge import IdimFeedBridge
+
+        requested_auto = bool(payload.get("auto_dispatch", False))
+        env_allows = os.environ.get("ALLOW_AUTO_EXECUTION", "false").lower() in ("1", "true", "yes")
+        if requested_auto and not env_allows:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "auto_dispatch requires ALLOW_AUTO_EXECUTION=true in the environment. "
+                    "Sync ingests signals; dispatch stays an explicit, separate action."
+                ),
+            )
+        auto_dispatch = requested_auto and env_allows
+
+        try:
+            notional_usd = float(payload.get("notional_usd", 25.0))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid notional_usd: {exc}") from exc
+
+        effective_limit = _effective_notional_cap()
+        if notional_usd <= 0 or notional_usd > effective_limit:
+            raise HTTPException(
+                status_code=400,
+                detail=f"notional_usd must be in (0, {effective_limit:.2f}].",
+            )
+
+        if auto_dispatch:
+            logger.warning(
+                "AUTO-DISPATCH ENABLED: Idim sync will place live orders at %.2f USD notional",
+                notional_usd,
+            )
+
+        bridge = IdimFeedBridge()
+        res = await run_in_threadpool(
+            bridge.sync_and_enqueue_signals,
+            auto_dispatch=auto_dispatch,
+            notional_usd=notional_usd,
+        )
+        res["auto_dispatch_applied"] = auto_dispatch
+        return res
+
+    # -------------------------------------------------------------------------
+    # Wildcard session routes LAST, so no literal path above can be shadowed.
+    # -------------------------------------------------------------------------
+
+    @app.get("/paper-sessions/{session_id}", dependencies=auth_dependencies)
     async def get_paper_session(session_id: str):
-        """Full detail for one paper session: config, every mark, and an equity curve."""
+        """Full detail for one paper session: config, every mark, equity curve."""
         _validate_session_id(session_id)
         session_dir = PAPER_SESSIONS_DIR / session_id
         schema = _detect_session_schema(session_dir) if session_dir.exists() else None
         if schema is None:
             raise HTTPException(status_code=404, detail=f"paper session {session_id!r} not found")
         active_ids, archived_ids, registry_error = _load_registry()
-        classification = "unknown" if registry_error is not None else _classify_session(session_id, active_ids, archived_ids)
+        classification = "unknown" if registry_error is not None else _classify_session(
+            session_id, active_ids, archived_ids
+        )
         if schema == "paper_session":
             return _summarize(session_dir, classification=classification)
         return _load_futures_paper_session(session_dir, classification=classification)
 
-    @app.get("/paper-sessions/{session_id}/live-prices", dependencies=[Depends(require_auth)])
+    @app.get("/paper-sessions/{session_id}/live-prices", dependencies=auth_dependencies)
     async def get_paper_session_live_prices(session_id: str):
         """Current live prices for a session's symbols -- display only.
 
-        Never reads or writes marks.jsonl/trades.jsonl/book.json. This is a
-        fast, frequent poll (every few seconds) purely to show price
-        movement; the receipted ledger only updates on its own schedule via
-        the background loop.
+        Never reads or writes marks.jsonl/trades.jsonl/book.json.
         """
         _validate_session_id(session_id)
         session_dir = PAPER_SESSIONS_DIR / session_id
@@ -940,18 +1623,17 @@ def register_paper_session_routes(
             raise HTTPException(status_code=404, detail=f"paper session {session_id!r} not found")
         session = json.loads(session_path.read_text(encoding="utf-8"))
 
-        from paper_session import fetch_last_prices_fast  # agent/paper_session.py, top-level module
+        # pyrefly: ignore [missing-import]
+        from paper_session import fetch_last_prices_fast
 
         try:
             prices = await run_in_threadpool(fetch_last_prices_fast, session["symbols"])
         except Exception as exc:  # noqa: BLE001 - upstream exchange call, surface as 502
             raise HTTPException(status_code=502, detail=f"live price fetch failed: {exc}") from exc
 
-        import datetime as _dt
+        return {"prices": prices, "timestamp": datetime.now(timezone.utc).isoformat()}
 
-        return {"prices": prices, "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat()}
-
-    @app.get("/paper-sessions/{session_id}/diagnostics", dependencies=[Depends(require_auth)])
+    @app.get("/paper-sessions/{session_id}/diagnostics", dependencies=auth_dependencies)
     async def get_paper_session_diagnostics(session_id: str):
         """Detailed fee-aware diagnostics from the receipted paper ledger."""
         _validate_session_id(session_id)
@@ -959,11 +1641,12 @@ def register_paper_session_routes(
         if not session_dir.exists() or not (session_dir / "session.json").exists():
             raise HTTPException(status_code=404, detail=f"paper session {session_id!r} not found")
 
+        # pyrefly: ignore [missing-import]
         from paper_session import compute_session_diagnostics
 
         return await run_in_threadpool(compute_session_diagnostics, session_dir)
 
-    @app.get("/paper-sessions/{session_id}/diagnostics.csv", dependencies=[Depends(require_auth)])
+    @app.get("/paper-sessions/{session_id}/diagnostics.csv", dependencies=auth_dependencies)
     async def get_paper_session_diagnostics_csv(session_id: str):
         """CSV export of closed paper trades for offline audit."""
         _validate_session_id(session_id)
@@ -971,6 +1654,7 @@ def register_paper_session_routes(
         if not session_dir.exists() or not (session_dir / "session.json").exists():
             raise HTTPException(status_code=404, detail=f"paper session {session_id!r} not found")
 
+        # pyrefly: ignore [missing-import]
         from paper_session import export_closed_trade_diagnostics_csv
 
         export_path = session_dir / "closed_trade_diagnostics.csv"

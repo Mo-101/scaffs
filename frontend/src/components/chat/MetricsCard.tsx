@@ -11,9 +11,10 @@ const SENTIMENT = {
 interface Props {
   metrics: Record<string, number>;
   compact?: boolean;
+  provenance?: "synthetic_research" | "paper_trading" | "historical_backtest";
 }
 
-export const MetricsCard = memo(function MetricsCard({ metrics, compact = false }: Props) {
+export const MetricsCard = memo(function MetricsCard({ metrics, compact = false, provenance }: Props) {
   const entries = DISPLAY_ORDER
     .filter((k) => metrics[k] != null)
     .map((k) => ({ k, v: metrics[k] }));
@@ -22,7 +23,18 @@ export const MetricsCard = memo(function MetricsCard({ metrics, compact = false 
 
   const shown = compact ? entries.slice(0, 6) : entries;
 
+  const isSynthetic = provenance === "synthetic_research";
+
   return (
+    <div className={cn(
+      "relative",
+      isSynthetic && "border-amber-500/30 bg-amber-500/5"
+    )}>
+      {isSynthetic && (
+        <p className="text-[10px] font-bold text-amber-500 uppercase tracking-wider px-3 pt-2">
+          Simulated Research
+        </p>
+      )}
     <div className={cn(
       "grid gap-1.5 rounded-xl border border-border/60 bg-muted/20 p-3",
       compact ? "grid-cols-3" : "grid-cols-[repeat(auto-fit,minmax(120px,1fr))]"
@@ -40,6 +52,7 @@ export const MetricsCard = memo(function MetricsCard({ metrics, compact = false 
           </p>
         </div>
       ))}
+    </div>
     </div>
   );
 });

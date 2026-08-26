@@ -1,0 +1,68 @@
+{
+  "scroll_id": "LLM_PAPER_TRADING_BOUNDARY_HARDENING",
+  "status": "BOOTSTRAP/EXPERIMENTAL",
+  "production_authorized": false,
+  "purpose": "Harden the boundary between advisory LLM research and deterministic paper trading. Enforce a canonical strategy/worker binding, isolate ResearchPlan.strategyType from runtime execution, and add synthetic provenance to LLM-generated backtest cards. This scroll is a bootstrap artifact; do not treat it as a production seal.",
+  "provenance": {
+    "origin": "builder",
+    "initiator": "devin",
+    "soulprint": "devin.scaffs.builder"
+  },
+  "affected_files": [
+    "backend/agent/src/trading/signal_queue.py",
+    "backend/agent/src/api/paper_session_routes.py",
+    "backend/agent/tests/test_signal_queue.py",
+    "server/services/gemini.ts",
+    "server/data/paperTrading.ts",
+    "server/index.ts",
+    "frontend/src/components/chat/RunCompleteCard.tsx",
+    "moscript/__init__.py",
+    "moscript/registry.jsonl"
+  ],
+  "requested_permissions": {
+    "read": [
+      "backend/agent/src/trading/signal_queue.py",
+      "backend/agent/src/api/paper_session_routes.py",
+      "server/services/gemini.ts",
+      "server/data/paperTrading.ts",
+      "server/index.ts",
+      "frontend/src/components/chat/RunCompleteCard.tsx"
+    ],
+    "write": [
+      "backend/agent/src/trading/signal_queue.py",
+      "backend/agent/src/api/paper_session_routes.py",
+      "backend/agent/tests/test_signal_queue.py",
+      "server/services/gemini.ts",
+      "server/data/paperTrading.ts",
+      "server/index.ts",
+      "frontend/src/components/chat/RunCompleteCard.tsx",
+      "moscript/__init__.py",
+      "moscript/scrolls/LLM_PAPER_TRADING_BOUNDARY_HARDENING.json",
+      "moscript/registry.jsonl"
+    ],
+    "execute": [
+      "python -m pytest backend/agent/tests/test_signal_queue.py -q",
+      "npm run build --workspace=frontend"
+    ]
+  },
+  "invariants": [
+    "canonical_strategies = {periodic_equal_weight_rebalance, bounded_grid_v1:5x, bounded_grid_v1:10x, funding_rate_zscore}",
+    "ResearchPlan.strategyType cannot enqueue a trading signal",
+    "generateRunData runs are tagged provenance=synthetic_research",
+    "LLM service must not import signal_queue or trading execution modules",
+    "Unknown target_strategy in signal queue returns REJECTED_UNSUPPORTED_STRATEGY"
+  ],
+  "test_commands": [
+    "cd /home/idona/MoStar/scaffs/backend/agent && /home/idona/MoStar/_apps/Scaffs/backend/agent/.venv/bin/python3 -m pytest tests/test_signal_queue.py -q",
+    "cd /home/idona/MoStar/scaffs/backend/agent && /home/idona/MoStar/_apps/Scaffs/backend/agent/.venv/bin/python3 -m pytest tests/ -q",
+    "cd /home/idona/MoStar/scaffs/frontend && npm run build"
+  ],
+  "rollback_files": [
+    "backend/agent/src/trading/signal_queue.py.bak",
+    "backend/agent/src/api/paper_session_routes.py.bak",
+    "server/services/gemini.ts.bak",
+    "server/data/paperTrading.ts.bak",
+    "server/index.ts.bak",
+    "frontend/src/components/chat/RunCompleteCard.tsx.bak"
+  ]
+}

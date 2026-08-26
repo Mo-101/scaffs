@@ -69,8 +69,13 @@ export const RunCompleteCard = memo(function RunCompleteCard({ msg }: Props) {
     <div className="flex gap-3">
       <AgentAvatar />
       <div className="flex-1 min-w-0 space-y-2">
+        {msg.provenance === "synthetic_research" && (
+          <div className="rounded border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-400">
+            SIMULATED RESEARCH OUTPUT — NOT PAPER-TRADING PERFORMANCE — NOT EXECUTION HISTORY
+          </div>
+        )}
         {msg.metrics && Object.keys(msg.metrics).length > 0 && (
-          <MetricsCard metrics={msg.metrics} compact />
+          <MetricsCard metrics={msg.metrics} compact provenance={msg.provenance} />
         )}
         {curve && curve.length > 1 && (
           <MiniEquityChart data={curve} height={80} />

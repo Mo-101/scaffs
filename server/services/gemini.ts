@@ -18,6 +18,9 @@ export interface ResearchPlan {
   toolsToCall: Array<{ name: string; args: Record<string, unknown> }>;
   responseText: string;
   symbols: string[];
+  // strategyType is research metadata only. It must NEVER be used as a
+  // runtime paper-trading strategy ID. Operational strategies are resolved
+  // through the canonical ThroneLock allowlist in the trading layer.
   strategyType: string;
 }
 

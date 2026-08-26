@@ -113,8 +113,8 @@
     "disconnected": "연결이 끊겼습니다"
   },
   "welcome": {
-    "title": "Vibe-Trading",
-    "subtitle": "전문 금융 에이전트 팀과 함께하는 vibe trading",
+    "title": "Scaffs",
+    "subtitle": "전문 금융 에이전트 팀과 함께하는 트레이딩 & 리서치",
     "describePrompt": "거래 전략을 설명하여 시작하세요.",
     "tryExample": "예시 시도:",
     "categories": {

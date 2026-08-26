@@ -113,8 +113,8 @@
     "disconnected": "连接已断开"
   },
   "welcome": {
-    "title": "Vibe-Trading",
-    "subtitle": "与你的专业金融智能体团队一起进行 vibe trading",
+    "title": "Scaffs",
+    "subtitle": "与你的专业金融智能体团队一起进行交易与研究",
     "describePrompt": "描述一个交易策略即可开始。",
     "tryExample": "试试示例：",
     "categories": {

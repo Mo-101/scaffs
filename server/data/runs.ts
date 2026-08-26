@@ -20,9 +20,12 @@ export interface IndicatorPoint {
   value: number;
 }
 
+export type RunProvenance = "synthetic_research" | "paper_trading" | "historical_backtest";
+
 export interface RunDetail {
   run_id: string;
   status: string;
+  provenance: RunProvenance;
   prompt: string;
   created_at: string;
   elapsed_seconds: number;
@@ -204,6 +207,7 @@ plot(ma20, "SMA 20", color=color.blue)
   return {
     run_id: runId,
     status: "success",
+    provenance: "synthetic_research" as RunProvenance,
     prompt,
     created_at: new Date(now.getTime() - 3600 * 1000).toISOString(),
     elapsed_seconds: 4.82,

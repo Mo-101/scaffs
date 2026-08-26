@@ -45,7 +45,7 @@ class PaperPostgres:
     def __init__(self, identity: WorkerIdentity, dsn: str | None = None) -> None:
         identity.validate()
         self.identity = identity
-        self.dsn = dsn or os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=idim_ikang port=5433")
+        self.dsn = dsn or os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=mostar port=5433")
         self._verify_account()
         self._lease = self._acquire_lease()
 

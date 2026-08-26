@@ -67,7 +67,17 @@ export const api = {
   createAlphaCompare: async (..._args: any[]): Promise<any> => {},
   createGoal: async (..._args: any[]): Promise<any> => {},
   createSession: async (..._args: any[]): Promise<any> => {},
-  deleteSession: async (..._args: any[]): Promise<any> => {},
+  getBinanceTestnetStatus: async (): Promise<any> => get("/paper-sessions/binance-testnet/status"),
+  getBinanceTestnetBalance: async (): Promise<any> => get("/paper-sessions/binance-testnet/balance"),
+  getBinanceTestnetPositions: async (symbol?: string): Promise<any> =>
+    get(`/paper-sessions/binance-testnet/positions${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`),
+  placeBinanceTestnetOrder: async (order: any): Promise<any> => post("/paper-sessions/binance-testnet/order", order),
+  getSignalQueuePending: async (limit?: number): Promise<any> =>
+    get(`/paper-sessions/signal-queue/pending${limit ? `?limit=${limit}` : ""}`),
+  getSignalQueueHistory: async (limit?: number): Promise<any> =>
+    get(`/paper-sessions/signal-queue/history${limit ? `?limit=${limit}` : ""}`),
+  dispatchQueuedSignal: async (payload: any): Promise<any> => post("/paper-sessions/signal-queue/dispatch", payload),
+  syncIdimSignals: async (payload?: any): Promise<any> => post("/paper-sessions/signal-queue/sync-idim", payload),
   getChannelStatus: async (): Promise<any> => get("/channels/status"),
   getDataSourceSettings: async (): Promise<any> => get("/settings/data-sources"),
   getDbStatus: async (..._args: any[]): Promise<any> => {},
@@ -85,10 +95,8 @@ export const api = {
   getSessionMessages: async (..._args: any[]): Promise<any> => {},
   haltLive: async (..._args: any[]): Promise<any> => {},
   listAutopilotEvidenceRuns: async (..._args: any[]): Promise<any> => {},
-  listPaperSessions: async (): Promise<any> => {
-    const index = await get("/api/paper/sessions");
-    return index.sessions ?? [];
-  },
+  listPaperSessions: async (scope: string = "active"): Promise<any> =>
+    get(`/paper-sessions?scope=${encodeURIComponent(scope)}`),
   listRuns: async (..._args: any[]): Promise<any> => {},
   listSessions: async (): Promise<any> => get("/sessions"),
   rebalanceGrid: async (..._args: any[]): Promise<any> => {},

@@ -1,67 +1,38 @@
 {
   "status": "PASS",
-  "accounts_expected": 6,
-  "accounts_passed": 6,
+  "accounts_expected": 4,
+  "accounts_passed": 4,
   "workers": [
     {
-      "worker_id": "control_5m",
-      "session_id": "control_5m_futures",
+      "worker_id": "rebalance_equal_weight_v1",
+      "session_id": "rebalance_equal_weight_v1",
+      "strategy_id": "periodic_equal_weight_rebalance",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "worker_id": "grid_futures_5x",
+      "session_id": "grid_futures_5x_v3",
+      "strategy_id": "bounded_grid_v1",
       "leverage": 5,
       "passed": true,
-      "errors": [],
-      "engine_closed_trades": 1,
-      "engine_open_events": 1,
-      "engine_close_events": 1
+      "errors": []
     },
     {
-      "worker_id": "control_10m",
-      "session_id": "control_10m_futures",
+      "worker_id": "grid_futures_10x",
+      "session_id": "grid_futures_10x_v3",
+      "strategy_id": "bounded_grid_v1",
+      "leverage": 10,
+      "passed": true,
+      "errors": []
+    },
+    {
+      "worker_id": "morning_glory",
+      "session_id": "morning_glory_futures",
+      "strategy_id": "funding_rate_zscore",
       "leverage": 5,
       "passed": true,
-      "errors": [],
-      "engine_closed_trades": 1,
-      "engine_open_events": 1,
-      "engine_close_events": 1
-    },
-    {
-      "worker_id": "control_15m",
-      "session_id": "control_15m_futures",
-      "leverage": 5,
-      "passed": true,
-      "errors": [],
-      "engine_closed_trades": 1,
-      "engine_open_events": 2,
-      "engine_close_events": 1
-    },
-    {
-      "worker_id": "candidate_5m",
-      "session_id": "candidate_5m_futures",
-      "leverage": 10,
-      "passed": true,
-      "errors": [],
-      "engine_closed_trades": 1,
-      "engine_open_events": 1,
-      "engine_close_events": 1
-    },
-    {
-      "worker_id": "candidate_10m",
-      "session_id": "candidate_10m_futures",
-      "leverage": 10,
-      "passed": true,
-      "errors": [],
-      "engine_closed_trades": 1,
-      "engine_open_events": 1,
-      "engine_close_events": 1
-    },
-    {
-      "worker_id": "candidate_15m",
-      "session_id": "candidate_15m_futures",
-      "leverage": 10,
-      "passed": true,
-      "errors": [],
-      "engine_closed_trades": 1,
-      "engine_open_events": 2,
-      "engine_close_events": 1
+      "errors": []
     }
   ]
 }

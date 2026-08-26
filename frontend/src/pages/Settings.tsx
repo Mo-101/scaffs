@@ -48,6 +48,7 @@ export function Settings() {
   const [binanceApiKey, setBinanceApiKey] = useState("");
   const [binanceApiSecret, setBinanceApiSecret] = useState("");
   const [clearBinanceKey, setClearBinanceKey] = useState(false);
+  const [binanceTesting, setBinanceTesting] = useState(false);
 
   const [okxApiKey, setOkxApiKey] = useState("");
   const [okxApiSecret, setOkxApiSecret] = useState("");
@@ -789,6 +790,43 @@ export function Settings() {
                     </label>
                   </div>
                 </label>
+
+                {/* Binance Demo / Testnet Connectivity Test */}
+                <div className="mt-2 rounded-xl border border-border/50 bg-muted/20 p-3">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                      <div className="text-xs font-semibold text-foreground">Binance USD-M Futures Testnet</div>
+                      <div className="text-[11px] text-muted-foreground">Endpoint: https://testnet.binancefuture.com</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setBinanceTesting(true);
+                        try {
+                          const res = await api.getBinanceTestnetStatus();
+                          if (res.ok) {
+                            toast.success(`Binance Testnet Connected (${res.latency_ms}ms)`, {
+                              description: res.configured
+                                ? `USDT Balance: $${Number(res.usdt_balance ?? 0).toLocaleString()}`
+                                : "Public testnet reachable. Provide keys for demo order placement.",
+                            });
+                          } else {
+                            toast.error("Binance Testnet Check Failed", { description: res.error });
+                          }
+                        } catch (err: any) {
+                          toast.error("Connection Failed", { description: err?.message });
+                        } finally {
+                          setBinanceTesting(false);
+                        }
+                      }}
+                      disabled={binanceTesting}
+                      className={ghostBtnClass}
+                    >
+                      {binanceTesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                      <span className="text-xs">{"Test Connection"}</span>
+                    </button>
+                  </div>
+                </div>
               </>
             )}
 

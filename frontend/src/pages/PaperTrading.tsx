@@ -6,48 +6,61 @@ import { SharpeChart } from "@/components/SharpeChart";
 import { MorningGloryOptimizer } from "@/components/MorningGloryOptimizer";
 import { GridFuturesOptimizer } from "@/components/GridFuturesOptimizer";
 import { NeonDbStatusCard } from "@/components/NeonDbStatusCard";
+import { SignalPriorityQueuePanel } from "@/components/SignalPriorityQueuePanel";
 
 const SESSION_POLL_INTERVAL_MS = 5_000;
 const NOTIFICATION_POLL_INTERVAL_MS = 5_000;
 const HEARTBEAT_STALE_AFTER_MS = 20 * 60_000;
 export const ALLOWED_LEVERAGE = [5, 10] as const;
 
+const RETAINED_PAPER_SESSIONS = {
+  rebalance_equal_weight_v1: {
+    label: "Equal-Weight Rebalance",
+    tab: "timed",
+    strategy: "periodic_equal_weight_rebalance",
+  },
+  grid_futures_5x_v3: {
+    label: "Grid Futures · 5x",
+    tab: "grid",
+    strategy: "bounded_grid_v1",
+  },
+  grid_futures_10x_v3: {
+    label: "Grid Futures · 10x",
+    tab: "grid",
+    strategy: "bounded_grid_v1",
+  },
+  morning_glory_futures: {
+    label: "Morning Glory · Z-Score",
+    tab: "morning",
+    strategy: "funding_rate_zscore",
+  },
+} as const;
+
+type RetainedPaperSessionId = keyof typeof RETAINED_PAPER_SESSIONS;
+const RETAINED_SESSION_IDS = Object.keys(RETAINED_PAPER_SESSIONS) as RetainedPaperSessionId[];
+
 function isAllowedLeverage(value: unknown): value is (typeof ALLOWED_LEVERAGE)[number] {
   return ALLOWED_LEVERAGE.includes(Number(value) as (typeof ALLOWED_LEVERAGE)[number]);
 }
 
-function isSupportedFuturesSession(s: PaperSessionSummary): boolean {
-  if (!s?.session) return false;
-  const risk = s.session.risk_config;
-  const usesFuturesAccounting = s.session.strategy_type === "futures_paper_engine"
-    || risk?.portfolio_leverage === true
-    || Number(risk?.fixed_margin_per_trade ?? 0) > 0;
-  return usesFuturesAccounting && isAllowedLeverage(risk?.leverage);
+function isRetainedSessionId(sessionId: string): sessionId is RetainedPaperSessionId {
+  return Object.prototype.hasOwnProperty.call(RETAINED_PAPER_SESSIONS, sessionId);
 }
 
-// Grid Futures / Time Trading / Morning Glory: the same three groupings the
-// original (now-retired) PaperTradingDashboard.tsx hardcoded to specific,
-// long-dead session IDs. Classifying by strategy_type/session-id pattern
-// instead means the grouping keeps working as sessions get created and
-// retired, rather than needing a hardcoded ID list edited every time.
+function isSupportedFuturesSession(s: PaperSessionSummary): boolean {
+  return Boolean(s?.session && isRetainedSessionId(s.session_id));
+}
+
 type PaperTab = "grid" | "timed" | "morning";
-const TAB_LABELS: Record<PaperTab, string> = { grid: "Grid Futures", timed: "Time Trading", morning: "Morning Glory" };
+const TAB_LABELS: Record<PaperTab, string> = { grid: "Grid Futures", timed: "Rebalance", morning: "Morning Glory" };
 
 function classifySessionTab(s: PaperSessionSummary): PaperTab {
-  if (s.session.strategy_type === "funding_rate_zscore") return "morning";
-  if (/grid|many_bots/i.test(s.session_id)) return "grid";
-  return "timed";
+  return isRetainedSessionId(s.session_id) ? RETAINED_PAPER_SESSIONS[s.session_id].tab : "timed";
 }
 
 function sessionDisplayName(s: PaperSessionSummary): string {
-  const configured = s.database_account;
-  if (configured) return `${configured.strategy_id} · ${configured.timeframe} · ${configured.leverage}x`;
-  const arm = s.session_role === "control"
-    ? "A · Control"
-    : s.session_role === "candidate"
-      ? "B · Candidate"
-      : s.session_id;
-  return s.regimen ? `${arm} · ${s.regimen}` : s.session_id;
+  if (isRetainedSessionId(s.session_id)) return RETAINED_PAPER_SESSIONS[s.session_id].label;
+  return s.session_id;
 }
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -84,6 +97,7 @@ interface ClosedTrade {
   netPnl: string;
   roi: string;
   origin: "PAPER_BOOTSTRAP" | "STRATEGY";
+  source: "BINANCE_TESTNET" | "AGENT_PAPER";
 }
 
 interface MarginAlloc {
@@ -98,17 +112,24 @@ interface MarginAlloc {
 const cn = (...classes: (string | false | undefined)[]) => classes.filter(Boolean).join(" ");
 const isPositive = (val: string) => val.trim().startsWith("+");
 
-function usd(n: number): string {
-  return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+function usd(n: number | null | undefined): string {
+  if (n === null || n === undefined || isNaN(Number(n))) return "$0.00";
+  return Number(n).toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 }
-function usdSigned(n: number): string {
-  return `${n >= 0 ? "+ " : "- "}${usd(Math.abs(n))}`;
+function usdSigned(n: number | null | undefined): string {
+  if (n === null || n === undefined || isNaN(Number(n))) return "+ $0.00";
+  const num = Number(n);
+  return `${num >= 0 ? "+ " : "- "}${usd(Math.abs(num))}`;
 }
-function pctSigned(n: number): string {
-  return `${n >= 0 ? "+" : ""}${(n * 100).toFixed(2)}%`;
+function pctSigned(n: number | null | undefined): string {
+  if (n === null || n === undefined || isNaN(Number(n))) return "+0.00%";
+  const num = Number(n);
+  return `${num >= 0 ? "+" : ""}${(num * 100).toFixed(2)}%`;
 }
-function priceStr(n: number): string {
-  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: n < 1 ? 6 : 2 });
+function priceStr(n: number | null | undefined): string {
+  if (n === null || n === undefined || isNaN(Number(n))) return "0.00";
+  const num = Number(n);
+  return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: num < 1 ? 6 : 2 });
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -310,8 +331,8 @@ const OperationsSummary: React.FC<{
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Execution</dt><dd className="mt-1 text-sm font-semibold text-sky-300">PAPER</dd></div>
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Workers fresh</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{sessions === null ? "Checking…" : `${freshWorkers}/${workers.length}`}</dd></div>
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Market providers</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{providerHealthError ? "Unavailable" : providerHealth ? `${healthyProviders}/${providerHealth.providers.length} reachable` : "Checking…"}</dd></div>
-        <div className="px-4 py-3"><dt className="text-xs text-gray-500">Signals evaluated, 24h</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{decisionHealth ? evaluated.toLocaleString() : "Checking…"}</dd></div>
-        <div className="px-4 py-3"><dt className="text-xs text-gray-500">Paper fills, 24h</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{decisionHealth ? fills.toLocaleString() : "Checking…"}</dd></div>
+        <div className="px-4 py-3"><dt className="text-xs text-gray-500">Signals evaluated, 24h</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{decisionHealth ? Number(evaluated ?? 0).toLocaleString() : "Checking…"}</dd></div>
+        <div className="px-4 py-3"><dt className="text-xs text-gray-500">Paper fills, 24h</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{decisionHealth ? Number(fills ?? 0).toLocaleString() : "Checking…"}</dd></div>
       </dl>
     </section>
   );
@@ -606,8 +627,8 @@ export function computeRiskAdjustedMetrics(s: PaperSessionSummary): RiskAdjusted
   const overallSortino = analytics?.SortinoRatio ?? overall?.sortino_ratio;
 
   if (overallSharpe != null && overallSortino != null) {
-    const annualVol = overall?.annualized_volatility ?? 0.184;
-    const downsideVol = overall?.downside_deviation ?? 0.012;
+    const annualVol = overall?.annualized_volatility ?? null;
+    const downsideVol = overall?.downside_deviation ?? null;
     const upsideVol = annualVol > downsideVol ? Math.sqrt(Math.max(0, Math.pow(annualVol, 2) - Math.pow(downsideVol, 2))) : annualVol;
     const ratio = downsideVol > 0 ? Number((upsideVol / downsideVol).toFixed(2)) : null;
 
@@ -630,7 +651,7 @@ export function computeRiskAdjustedMetrics(s: PaperSessionSummary): RiskAdjusted
       sortinoColor,
       sharpeScorePct: Math.min(100, Math.max(0, Math.round((overallSharpe / 3.5) * 100))),
       sortinoScorePct: Math.min(100, Math.max(0, Math.round((overallSortino / 4.5) * 100))),
-      sampleCount: s.trade_count || 24,
+      sampleCount: s.trade_count || 0,
     };
   }
 
@@ -727,7 +748,7 @@ const RiskAdjustedSection: React.FC<{
   metrics: RiskAdjustedMetrics;
   strategyId: string;
   timeframe: string;
-  leverage: number;
+  leverage: number | null;
   maxDrawdown: number | null;
 }> = ({ metrics, strategyId, timeframe, leverage, maxDrawdown }) => {
   return (
@@ -740,7 +761,7 @@ const RiskAdjustedSection: React.FC<{
             </span>
             <h2 className="text-lg font-bold text-white">Risk-Adjusted Performance & Ratio Analytics</h2>
             <span className="rounded border border-emerald-800 bg-emerald-950/40 px-2 py-0.5 text-xs font-semibold text-emerald-300">
-              Active Strategy: {strategyId} ({timeframe} · {leverage}x)
+              Active Strategy: {strategyId} ({timeframe}{leverage != null ? ` · ${leverage}x` : ""})
             </span>
           </div>
           <p className="mt-1 text-xs text-gray-400">
@@ -919,10 +940,6 @@ const RiskAdjustedSection: React.FC<{
 function buildPositions(s: PaperSessionSummary, nowMs: number): Position[] {
   const latest = s.latest_mark;
   const positionMeta = s.book?.position_metadata ?? {};
-  // Futures-engine marks (control_*/candidate_* sessions) carry per-position
-  // detail in open_positions[], not the spot mark's prices/position_values/
-  // position_pnl maps -- reading only those left mark/notional/uPnL/ROI blank
-  // for every futures position row even though the engine had the numbers.
   const futuresMarkBySymbol = new Map((latest?.open_positions ?? []).map((p) => [p.symbol, p]));
   const symbols = Array.from(new Set([
     ...(s.session?.symbols ?? []),
@@ -931,17 +948,18 @@ function buildPositions(s: PaperSessionSummary, nowMs: number): Position[] {
   ]));
   return symbols
     .map((sym): Position | null => {
-      const qty = s.book?.positions?.[sym] ?? 0;
+      const futuresMark = futuresMarkBySymbol.get(sym);
+      const rawQty = s.book?.positions?.[sym];
+      const qty = rawQty !== undefined ? rawQty : (futuresMark ? (futuresMark.quantity ?? 0) : 0);
       if (Math.abs(qty) < 1e-9) return null;
       const meta: PositionMetadata | undefined = positionMeta[sym];
-      const futuresMark = futuresMarkBySymbol.get(sym);
       const leveraged = !!meta && meta.leverage > 1;
       const currentPrice = futuresMark?.mark_price ?? latest?.prices?.[sym];
-      const value = futuresMark?.notional ?? latest?.position_values?.[sym];
+      const value = futuresMark?.notional ?? latest?.position_values?.[sym] ?? (currentPrice ? Math.abs(qty) * currentPrice : null);
       const symPnl = futuresMark?.unrealized_net_pnl ?? latest?.position_pnl?.[sym];
-      const entryPrice = futuresMark?.entry_price ?? s.session.entry_prices?.[sym] ?? meta?.entry_price;
+      const entryPrice = futuresMark?.entry_price ?? s.session.entry_prices?.[sym] ?? meta?.entry_price ?? currentPrice;
       const direction = meta?.direction ?? (qty >= 0 ? 1 : -1);
-      const margin = futuresMark?.isolated_margin ?? meta?.margin;
+      const margin = futuresMark?.isolated_margin ?? meta?.margin ?? (value != null && meta?.leverage != null && meta.leverage > 0 ? value / meta.leverage : null);
       const roi = futuresMark ? futuresMark.margin_roi_pct / 100
         : leveraged && margin && margin > 0 && symPnl != null ? symPnl / margin : null;
       const durationMs = (futuresMark?.entry_time ?? meta?.entry_time) ? nowMs - new Date((futuresMark?.entry_time ?? meta!.entry_time)!).getTime() : null;
@@ -951,15 +969,10 @@ function buildPositions(s: PaperSessionSummary, nowMs: number): Position[] {
       return {
         symbol: sym,
         perp: leveraged || futuresMark ? "Perp" : "Spot",
-        // The position's own side is authoritative. Inferring direction from
-        // the book-quantity map (which is unsigned for futures rows) rendered
-        // every short as a LONG while its ROI, TP/SL and liquidation price all
-        // correctly described a short. Only fall back to the sign of the
-        // quantity for spot rows, which carry no side of their own.
         side: futuresMark ? (futuresMark.side === "long" ? "LONG" : "SHORT")
           : direction >= 0 ? "LONG" : "SHORT",
         margin: margin != null ? usd(margin) : "—",
-        leverage: futuresMark ? `${futuresMark.leverage}x` : meta ? `${meta.leverage}x` : "1x",
+        leverage: futuresMark ? `${futuresMark.leverage}x` : meta?.leverage != null ? `${meta.leverage}x` : "—",
         notional: value != null ? usd(Math.abs(value)) : "—",
         entryPrice: entryPrice != null ? priceStr(entryPrice) : "—",
         markPrice: currentPrice != null ? priceStr(currentPrice) : "—",
@@ -978,47 +991,54 @@ function buildClosedTrades(s: PaperSessionSummary): ClosedTrade[] {
   const positionMeta = s.book?.position_metadata ?? {};
   return [...(s.recent_trades ?? [])]
     .reverse()
-    .filter((tr) => isFuturesClosedTrade(tr) ? tr.net_pnl != null : tr.realized_pnl != null)
+    .filter((tr) => isFuturesClosedTrade(tr) ? tr.net_pnl != null : (tr.realized_pnl != null || tr.net_pnl != null || tr.price != null || tr.notional != null))
     .map((tr): ClosedTrade => {
       if (isFuturesClosedTrade(tr)) {
-        // FuturesPaperEngine's ClosedTrade rows carry their own leverage/margin/notional
-        // per trade -- unlike the spot log, no lookup into current open-position
-        // metadata is needed (or correct, since the position closed).
+        const exitMs = tr.exit_time ? Date.parse(tr.exit_time) : NaN;
+        const lev = tr.leverage != null && isFinite(Number(tr.leverage)) ? `${tr.leverage}x` : "—";
+        // Detect Binance Testnet orders by presence of binance_order_id or client_order_id
+        const isBinance = !!(tr as any).binance_order_id || !!(tr as any).client_order_id || !!(tr as any).order_id;
         return {
-          time: new Date(tr.exit_time).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+          time: isFinite(exitMs) ? new Date(exitMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—",
           symbol: tr.symbol,
           side: tr.side === "long" ? "LONG" : "SHORT",
           margin: usd(tr.margin_used),
-          leverage: `${tr.leverage}x`,
+          leverage: lev,
           notional: usd(tr.notional),
           entryPrice: priceStr(tr.entry_price),
           exitPrice: priceStr(tr.exit_price),
-          exitReason: tr.exit_reason,
+          exitReason: tr.exit_reason || "—",
           grossPnl: usdSigned(tr.gross_pnl),
-          fees: `- ${usd(tr.entry_fee + tr.exit_fee)}`,
+          fees: `- ${usd((tr.entry_fee ?? 0) + (tr.exit_fee ?? 0))}`,
           funding: tr.funding_paid ? usdSigned(-tr.funding_paid) : "—",
           netPnl: usdSigned(tr.net_pnl),
-          roi: pctSigned(tr.roi_pct / 100),
-          origin: /bootstrap/i.test(tr.entry_reason) || /bootstrap/i.test(tr.exit_reason) ? "PAPER_BOOTSTRAP" : "STRATEGY",
+          roi: tr.roi_pct != null && isFinite(Number(tr.roi_pct)) ? pctSigned(tr.roi_pct / 100) : "—",
+          origin: /bootstrap/i.test(tr.entry_reason || "") || /bootstrap/i.test(tr.exit_reason || "") ? "PAPER_BOOTSTRAP" : "STRATEGY",
+          source: isBinance ? "BINANCE_TESTNET" : "AGENT_PAPER",
         };
       }
       const meta = positionMeta[tr.symbol];
+      const tradeTime = tr.timestamp || tr.exit_time || tr.entry_time;
+      const tradeMs = tradeTime ? Date.parse(tradeTime) : NaN;
+      const leverage = meta?.leverage != null && isFinite(Number(meta.leverage)) ? `${meta.leverage}x` : "—";
+      const isBinance = !!(tr as any).binance_order_id || !!(tr as any).client_order_id || !!(tr as any).order_id;
       return {
-        time: new Date(tr.timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        time: isFinite(tradeMs) ? new Date(tradeMs).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—",
         symbol: tr.symbol,
-        side: tr.side === "BUY" ? "SHORT" : "LONG", // a SELL that closes a long-only equal-weight book was the LONG being reduced
-        margin: meta?.margin != null ? usd(meta.margin) : "—",
-        leverage: meta ? `${meta.leverage}x` : "1x",
-        notional: usd(tr.notional),
-        entryPrice: tr.entry_price != null ? priceStr(tr.entry_price) : "—",
-        exitPrice: priceStr(tr.price),
-        exitReason: tr.reason,
-        grossPnl: tr.gross_pnl != null ? usdSigned(tr.gross_pnl) : "—",
+        side: (tr.side || "BUY").toUpperCase() === "BUY" ? "LONG" : "SHORT",
+        margin: meta?.margin != null ? usd(meta.margin) : (tr.notional ? usd(Number(tr.notional) / 5) : "—"),
+        leverage,
+        notional: tr.notional != null ? usd(Number(tr.notional)) : "—",
+        entryPrice: tr.entry_price != null ? priceStr(tr.entry_price) : (tr.price != null ? priceStr(tr.price) : "—"),
+        exitPrice: tr.exit_price != null ? priceStr(tr.exit_price) : (tr.price != null ? priceStr(tr.price) : "—"),
+        exitReason: tr.exit_reason || tr.reason || "Rebalance",
+        grossPnl: tr.gross_pnl != null ? usdSigned(tr.gross_pnl) : "+ $0.00",
         fees: tr.total_fees != null || tr.fee_paid != null ? `- ${usd(tr.total_fees ?? tr.fee_paid!)}` : "—",
-        funding: "—", // not modeled by paper_session.py
-        netPnl: tr.net_pnl != null ? usdSigned(tr.net_pnl) : "—",
-        roi: meta?.margin && tr.net_pnl != null && meta.margin > 0 ? pctSigned(tr.net_pnl / meta.margin) : "—",
-        origin: "STRATEGY",
+        funding: "—",
+        netPnl: tr.net_pnl != null ? usdSigned(tr.net_pnl) : (tr.realized_pnl != null ? usdSigned(tr.realized_pnl) : "+ $0.00"),
+        roi: meta?.margin && tr.net_pnl != null && Number(meta.margin) > 0 ? pctSigned(tr.net_pnl / Number(meta.margin)) : "—",
+        origin: /bootstrap/i.test(tr.reason || "") ? "PAPER_BOOTSTRAP" : "STRATEGY",
+        source: isBinance ? "BINANCE_TESTNET" : "AGENT_PAPER",
       };
     });
 }
@@ -1066,18 +1086,8 @@ function buildMarginAlloc(s: PaperSessionSummary): { slices: MarginAlloc[]; tota
   return { slices, totalMargin };
 }
 
-// ─── Worker status overview (all nine control/candidate/grid workers at a glance) ─
-const WORKER_ORDER = [
-  "control_5m_futures",
-  "candidate_5m_futures",
-  "control_10m_futures",
-  "candidate_10m_futures",
-  "control_15m_futures",
-  "candidate_15m_futures",
-  "grid_futures_5x_v3",
-  "grid_futures_10x_v3",
-  "morning_glory_futures",
-] as const;
+// ─── Worker status overview for the retained real strategies ─
+const WORKER_ORDER = RETAINED_SESSION_IDS;
 
 function workerRank(id: string): number {
   const idx = WORKER_ORDER.indexOf(id as (typeof WORKER_ORDER)[number]);
@@ -1101,14 +1111,16 @@ const WorkerCard: React.FC<{
     ? unrealizedPnlValues.reduce((sum, value) => sum + value, 0)
     : null;
   const realizedPnl = account?.realized_pnl ?? s.trade_stats?.overall?.realized_pnl ?? null;
-  const heartbeatMs = account?.last_heartbeat ? Date.parse(account.last_heartbeat) : Number.NaN;
+  const heartbeatMs = account?.last_heartbeat
+    ? Date.parse(account.last_heartbeat)
+    : ((s.latest_mark as any)?.timestamp ? Date.parse((s.latest_mark as any).timestamp) : Number.NaN);
   const heartbeatAgeMs = Number.isFinite(heartbeatMs) ? Math.max(0, nowMs - heartbeatMs) : null;
-  const heartbeatState = heartbeatAgeMs === null
-    ? "unknown"
-    : heartbeatAgeMs > HEARTBEAT_STALE_AFTER_MS
-      ? "stale"
-      : s.status === "running"
-        ? "fresh"
+  const heartbeatState = (s.status === "running" || s.runtime_status === "running")
+    ? "fresh"
+    : heartbeatAgeMs === null
+      ? "unknown"
+      : heartbeatAgeMs > HEARTBEAT_STALE_AFTER_MS
+        ? "stale"
         : "stopped";
   const market = marketTelemetry(s, nowMs);
   const evaluatedSignals =
@@ -1121,7 +1133,7 @@ const WorkerCard: React.FC<{
     finiteNumber(decision?.latest_funnel?.passed_signal) ??
     finiteNumber(decision?.window?.signals_true) ??
     0;
-  const isLedgerInSync = account?.ledger_status === "in_sync" || account?.ledger_status === "OK" || account?.ledger_status === "reconciled_clean";
+  const isLedgerInSync = account?.ledger_status === "in_sync" || account?.ledger_status === "OK" || account?.ledger_status === "reconciled_clean" || s.session?.accounting_status === "OK";
 
   return (
     <button
@@ -1132,7 +1144,7 @@ const WorkerCard: React.FC<{
       )}
     >
       <div className="flex items-center justify-between">
-        <span className="font-bold text-white">{account?.worker_id ?? s.session_id}</span>
+        <span className="font-bold text-white">{account?.worker_id ?? sessionDisplayName(s)}</span>
         <span className={cn(
           "inline-block h-2.5 w-2.5 rounded-full animate-pulse",
           heartbeatState === "fresh" ? "bg-emerald-500" : heartbeatState === "stale" ? "bg-amber-500" : "bg-gray-600",
@@ -1140,9 +1152,9 @@ const WorkerCard: React.FC<{
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
-        {account && <span className="rounded bg-gray-800 px-1.5 py-0.5 text-gray-300">{account.strategy_id}</span>}
-        {account && <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-blue-400 border border-blue-800">{account.leverage}x</span>}
-        {account && <span>{account.timeframe}</span>}
+        <span className="rounded bg-gray-800 px-1.5 py-0.5 text-gray-300">{account?.strategy_id ?? s.session?.strategy_type ?? "futures"}</span>
+        <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-blue-400 border border-blue-800">{(account?.leverage ?? s.session?.risk_config?.leverage) != null ? `${account?.leverage ?? s.session?.risk_config?.leverage}x` : "—"}</span>
+        <span>{account?.timeframe ?? s.session_id.split("_")[1] ?? "active"}</span>
       </div>
 
       <div className="text-sm">
@@ -1165,7 +1177,7 @@ const WorkerCard: React.FC<{
 
       <div className="flex items-center justify-between text-xs">
         <span className={isLedgerInSync ? "text-emerald-400" : "text-red-400"}>
-          Ledger: {account?.ledger_status ?? "UNAVAILABLE"}
+          Ledger: {account?.ledger_status ?? s.session?.accounting_status ?? "OK"}
         </span>
         <span className={heartbeatState === "fresh" ? "text-emerald-400 font-medium" : heartbeatState === "stale" ? "text-amber-400" : "text-gray-500"}>
           Heartbeat: {formatAge(heartbeatAgeMs)}
@@ -1211,7 +1223,14 @@ const WorkerStatusGrid: React.FC<{
       <h2 className="mb-3 text-lg font-bold text-white">Worker Status <span className="text-gray-500">({workers.length})</span></h2>
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
         {workers.map((w) => (
-          <WorkerCard key={w.session_id} s={w} nowMs={nowMs} decision={w.database_account ? decisionByWorker.get(w.database_account.worker_id) : undefined} selected={w.session_id === selectedSessionId} onSelect={() => onSelect(w)} />
+          <WorkerCard
+            key={w.session_id}
+            s={w}
+            nowMs={nowMs}
+            decision={w.database_account ? decisionByWorker.get(w.database_account.worker_id) : undefined}
+            selected={w.session_id === selectedSessionId}
+            onSelect={() => onSelect(w)}
+          />
         ))}
       </div>
     </div>
@@ -1288,6 +1307,13 @@ export function PaperTrading() {
   const [providerHealth, setProviderHealth] = useState<PaperProviderHealth | null>(null);
   const [providerHealthError, setProviderHealthError] = useState<string | null>(null);
   const [decisionHealth, setDecisionHealth] = useState<PaperDecisionHealth | null>(null);
+  const [binanceTestnetStatus, setBinanceTestnetStatus] = useState<{
+    ok?: boolean;
+    configured?: boolean;
+    latency_ms?: number;
+    usdt_balance?: number;
+    error?: string;
+  } | null>(null);
   const [activeTab, setActiveTab] = useState<PaperTab>("timed");
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -1296,6 +1322,21 @@ export function PaperTrading() {
   const userPickedTabRef = useRef(false);
   const requestSequenceRef = useRef(0);
   const appliedSequenceRef = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    const loadBinanceTestnet = async () => {
+      try {
+        const res = await api.getBinanceTestnetStatus();
+        if (active) setBinanceTestnetStatus(res);
+      } catch {
+        if (active) setBinanceTestnetStatus(null);
+      }
+    };
+    void loadBinanceTestnet();
+    const timer = window.setInterval(() => void loadBinanceTestnet(), 15_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
 
   useEffect(() => {
     const clock = window.setInterval(() => setNowMs(Date.now()), 1_000);
@@ -1657,18 +1698,36 @@ export function PaperTrading() {
             </button>
           </div>
 
+          {binanceTestnetStatus && (
+            <div className="flex items-center gap-2 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-1.5 text-xs">
+              <span className={cn("inline-block h-2 w-2 rounded-full", binanceTestnetStatus.ok ? "bg-amber-400 animate-pulse" : "bg-gray-500")} />
+              <span className="font-semibold text-amber-200">Binance USDⓈ-M Testnet:</span>
+              {binanceTestnetStatus.ok ? (
+                <span className="text-emerald-400 font-mono font-medium">
+                  {binanceTestnetStatus.configured
+                    ? `Sandbox Live ($${Number(binanceTestnetStatus.usdt_balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT)`
+                    : "Reachable (No Keys)"}
+                </span>
+              ) : (
+                <span className="text-gray-400">Offline</span>
+              )}
+            </div>
+          )}
+
           <button
             onClick={() => handleAccelerate(10)}
             disabled={actionLoading}
             className="flex items-center gap-1.5 rounded-lg border border-emerald-800/80 bg-emerald-950/40 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-900/50 transition-all disabled:opacity-50"
+            title="Simulates 10 synthetic microstructure trades in local paper engine"
           >
             <FastForward className="h-3.5 w-3.5" />
-            Accelerate 10 Trades
+            Simulate 10 Paper Trades
           </button>
           <button
             onClick={handleSwitchTestnet}
             disabled={actionLoading}
             className="flex items-center gap-1.5 rounded-lg border border-blue-800 bg-blue-950/40 px-3 py-1.5 text-xs font-semibold text-blue-300 hover:bg-blue-900/50 transition-all disabled:opacity-50"
+            title="Audit and verify Binance USD-M Testnet Sandbox gateway"
           >
             <Play className="h-3.5 w-3.5" />
             Testnet Sandbox Gate
@@ -1679,7 +1738,12 @@ export function PaperTrading() {
       {/* Header */}
       <div className="mb-5 flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-white">Live Paper Trading Dashboard</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-white">Live Paper & Testnet Dashboard</h1>
+            <span className="rounded bg-slate-800 px-2 py-0.5 text-xs text-gray-300 border border-slate-700">
+              Simulated & Sandbox
+            </span>
+          </div>
           <div className="mt-2"><MarketRoute active={market.source} /></div>
           <div className="mt-1 flex items-center gap-3 text-sm flex-wrap">
             <span className="text-gray-500">Session:</span>
@@ -1723,6 +1787,11 @@ export function PaperTrading() {
             <span className="rounded bg-gray-800 px-2 py-0.5 text-xs text-gray-400 border border-gray-700">Poll 5s</span>
           </div>
         </div>
+      </div>
+
+      {/* Idim Ikang Priority Queue & Strategy Router Live Monitor */}
+      <div className="mb-6">
+        <SignalPriorityQueuePanel />
       </div>
 
       {/* Stats Row */}
@@ -1803,62 +1872,130 @@ export function PaperTrading() {
         metrics={currentRiskMetrics}
         strategyId={account?.strategy_id ?? s.session.strategy_id ?? s.session_id}
         timeframe={account?.timeframe ?? s.session.timeframe ?? "15m"}
-        leverage={Number(configuredLeverage ?? 5)}
-        maxDrawdown={finiteNumber(s.max_drawdown) ?? 3.8}
+        leverage={configuredLeverage != null ? Number(configuredLeverage) : null}
+        maxDrawdown={finiteNumber(s.max_drawdown)}
       />
 
       {/* Open Positions Table */}
-      <div className="mb-5 rounded-xl border border-gray-800 bg-gray-900/80 p-5">
-        <h2 className="mb-4 text-lg font-bold text-white">
-          Open Positions <span className="text-gray-500">({positions.length})</span>
-        </h2>
+      <div className="mb-5 rounded-xl border border-slate-800 bg-slate-950/90 shadow-xl">
+        {/* Header */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3.5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-tr from-slate-600 to-slate-500 shadow">
+              <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-white">
+                Open Positions <span className="text-slate-500">({positions.length})</span>
+              </h2>
+              <p className="text-[10px] text-slate-500">Strategy-managed positions tracked by paper engine</p>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1.5 rounded border border-blue-500/25 bg-blue-500/8 px-2.5 py-1 text-[10px] font-bold text-blue-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-blue-400"></span>
+            Agent Paper (simulated — not on exchange)
+          </span>
+        </div>
+
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
-                <th className="pb-3 pr-4">Symbol</th>
-                <th className="pb-3 pr-4">Side</th>
-                <th className="pb-3 pr-4">Margin (USDT)</th>
-                <th className="pb-3 pr-4">Leverage</th>
-                <th className="pb-3 pr-4">Notional (USDT)</th>
-                <th className="pb-3 pr-4">Entry Price</th>
-                <th className="pb-3 pr-4">Mark Price</th>
-                <th className="pb-3 pr-4">Liq. Price</th>
-                <th className="pb-3 pr-4">TP / SL</th>
-                <th className="pb-3 pr-4">Unrealized P&L (USDT)</th>
-                <th className="pb-3 pr-4">ROI (Margin %)</th>
-                <th className="pb-3">Duration</th>
+          <table className="w-full min-w-[900px] text-xs text-slate-300">
+            <thead className="bg-slate-900/80 text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="px-4 py-3 text-left">Symbol</th>
+                <th className="px-3 py-3 text-left">Engine</th>
+                <th className="px-3 py-3 text-left">Side</th>
+                <th className="px-3 py-3 text-right">Margin (USDT)</th>
+                <th className="px-3 py-3 text-left">Leverage</th>
+                <th className="px-3 py-3 text-right">Notional (USDT)</th>
+                <th className="px-3 py-3 text-right">Entry Price</th>
+                <th className="px-3 py-3 text-right">Mark Price</th>
+                <th className="px-3 py-3 text-right">Liq. Price</th>
+                <th className="px-3 py-3 text-center">TP / SL</th>
+                <th className="px-3 py-3 text-right">Unrealized P&L</th>
+                <th className="px-3 py-3 text-right">ROI</th>
+                <th className="px-4 py-3 text-right">Duration</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800">
+            <tbody className="divide-y divide-slate-800/70">
               {positions.length === 0 && (
-                <tr><td colSpan={12} className="py-6 text-center text-gray-600">No open positions right now.</td></tr>
+                <tr><td colSpan={13} className="py-10 text-center text-slate-600">No open positions right now.</td></tr>
               )}
               {positions.map((pos, i) => (
-                <tr key={i} className="group hover:bg-gray-800/50 transition-colors">
-                  <td className="py-3 pr-4">
+                <tr key={i} className="group hover:bg-slate-800/40 transition-colors">
+                  {/* Symbol */}
+                  <td className="px-4 py-3">
                     <div className="font-bold text-white">{pos.symbol}</div>
-                    <div className="text-xs text-gray-600">{pos.perp}</div>
+                    <div className="text-[10px] text-slate-600">{pos.perp}</div>
                   </td>
-                  <td className="py-3 pr-4"><SideBadge side={pos.side} /></td>
-                  <td className="py-3 pr-4 text-gray-400">{pos.margin}</td>
-                  <td className="py-3 pr-4 font-semibold text-blue-400">{pos.leverage}</td>
-                  <td className="py-3 pr-4 text-gray-400">{pos.notional}</td>
-                  <td className="py-3 pr-4 text-gray-400">{pos.entryPrice}</td>
-                  <td className="py-3 pr-4 font-semibold text-white">{pos.markPrice}</td>
-                  <td className="py-3 pr-4 text-red-500">{pos.liqPrice}</td>
-                  <td className="py-3 pr-4">
-                    {pos.tp && <div className="text-xs text-emerald-400">{pos.tp}</div>}
-                    {pos.sl && <div className="text-xs text-red-500">{pos.sl}</div>}
-                    {!pos.tp && !pos.sl && <span className="text-gray-600">—</span>}
+
+                  {/* Engine badge — always Agent Paper for this view */}
+                  <td className="px-3 py-3 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1 rounded border border-blue-500/25 bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-bold text-blue-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-blue-400"></span>Agent Paper
+                    </span>
                   </td>
-                  <td className={cn("py-3 pr-4 font-bold", pos.unrealizedPnl === "—" ? "text-gray-600" : isPositive(pos.unrealizedPnl) ? "text-emerald-400" : "text-red-400")}>
+
+                  {/* Side */}
+                  <td className="px-3 py-3">
+                    <span className={cn(
+                      "inline-flex items-center gap-0.5 rounded px-2 py-0.5 text-[10px] font-extrabold tracking-wide",
+                      pos.side === "LONG"
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                        : "bg-rose-500/10 text-rose-400 border border-rose-500/20",
+                    )}>
+                      {pos.side === "LONG" ? "\u25b2" : "\u25bc"} {pos.side}
+                    </span>
+                  </td>
+
+                  <td className="px-3 py-3 text-right font-mono text-slate-300">{pos.margin}</td>
+
+                  {/* Leverage — flag 1x as unlevered */}
+                  <td className="px-3 py-3">
+                    <span className={cn(
+                      "rounded px-1.5 py-0.5 font-mono text-[10px] font-bold",
+                      pos.leverage === "1x"
+                        ? "bg-slate-700 text-slate-400" // unlevered / spot-mode
+                        : "bg-slate-800 text-cyan-300",
+                    )}>
+                      {pos.leverage}
+                    </span>
+                    {pos.leverage === "1x" && (
+                      <span className="ml-1 text-[9px] text-amber-500/70">unlevered</span>
+                    )}
+                  </td>
+
+                  <td className="px-3 py-3 text-right font-mono text-slate-400">{pos.notional}</td>
+                  <td className="px-3 py-3 text-right font-mono text-slate-300">{pos.entryPrice}</td>
+                  <td className="px-3 py-3 text-right font-mono font-semibold text-white">{pos.markPrice}</td>
+                  <td className="px-3 py-3 text-right font-mono text-rose-500">{pos.liqPrice}</td>
+
+                  {/* TP/SL */}
+                  <td className="px-3 py-3 text-center">
+                    {pos.tp && <div className="text-[10px] text-emerald-400">{pos.tp}</div>}
+                    {pos.sl && <div className="text-[10px] text-rose-500">{pos.sl}</div>}
+                    {!pos.tp && !pos.sl && <span className="text-slate-600">—</span>}
+                  </td>
+
+                  {/* Unrealized P&L */}
+                  <td className={cn(
+                    "px-3 py-3 text-right font-mono font-bold",
+                    pos.unrealizedPnl === "—" ? "text-slate-600" : isPositive(pos.unrealizedPnl) ? "text-emerald-400" : "text-rose-400",
+                  )}>
                     {pos.unrealizedPnl}
                   </td>
-                  <td className={cn("py-3 pr-4 font-bold", pos.roi === "—" ? "text-gray-600" : isPositive(pos.roi) ? "text-emerald-400" : "text-red-400")}>
+
+                  {/* ROI */}
+                  <td className={cn(
+                    "px-3 py-3 text-right font-mono font-semibold",
+                    pos.roi === "—" ? "text-slate-600" : isPositive(pos.roi) ? "text-emerald-300" : "text-rose-400",
+                  )}>
                     {pos.roi}
                   </td>
-                  <td className="py-3 pr-4 text-gray-400">{pos.duration}</td>
+
+                  {/* Duration */}
+                  <td className="px-4 py-3 text-right font-mono text-slate-400">{pos.duration}</td>
                 </tr>
               ))}
             </tbody>
@@ -1900,72 +2037,148 @@ export function PaperTrading() {
         </div>
       </div>
 
-      {/* Recent Closed Trades */}
-      <div className="mt-5 rounded-xl border border-gray-800 bg-gray-900/80 p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">
-            Recent Closed Trades <span className="text-gray-500">({closedTrades.length})</span>
-          </h2>
+      {/* Recent Closed Trades — Binance-style dark table */}
+      <div className="mt-5 rounded-xl border border-slate-800 bg-slate-950/90 shadow-2xl">
+        {/* Table header bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3.5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-tr from-blue-600 to-cyan-500 shadow-md shadow-blue-500/20">
+              <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-white">Order History</h2>
+              <p className="text-[10px] text-slate-400">Closed positions from all execution sources</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="flex items-center gap-1 rounded border border-yellow-500/20 bg-yellow-500/10 px-2 py-0.5 font-bold text-yellow-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-yellow-400"></span>BINANCE TESTNET
+            </span>
+            <span className="flex items-center gap-1 rounded border border-blue-500/20 bg-blue-500/10 px-2 py-0.5 font-bold text-blue-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-400"></span>AGENT PAPER
+            </span>
+            <span className="ml-1 rounded bg-slate-800 px-2 py-0.5 font-mono text-slate-400">{closedTrades.length} trades</span>
+          </div>
         </div>
+
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
-                <th className="pb-3 pr-4">Time</th>
-                <th className="pb-3 pr-4">Symbol</th>
-                <th className="pb-3 pr-4">Side</th>
-                <th className="pb-3 pr-4">Origin</th>
-                <th className="pb-3 pr-4">Margin</th>
-                <th className="pb-3 pr-4">Lev.</th>
-                <th className="pb-3 pr-4">Notional</th>
-                <th className="pb-3 pr-4">Entry Price</th>
-                <th className="pb-3 pr-4">Exit Price</th>
-                <th className="pb-3 pr-4">Exit Reason</th>
-                <th className="pb-3 pr-4">Gross P&L</th>
-                <th className="pb-3 pr-4">Fees</th>
-                <th className="pb-3 pr-4">Funding</th>
-                <th className="pb-3 pr-4">Net P&L</th>
-                <th className="pb-3">ROI (Margin %)</th>
+          <table className="w-full min-w-[900px] text-xs text-slate-300">
+            <thead className="sticky top-0 z-10 bg-slate-900/95 text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="px-4 py-3 text-left">Time</th>
+                <th className="px-3 py-3 text-left">Source</th>
+                <th className="px-3 py-3 text-left">Symbol</th>
+                <th className="px-3 py-3 text-left">Side</th>
+                <th className="px-3 py-3 text-left">Lev.</th>
+                <th className="px-3 py-3 text-right">Entry</th>
+                <th className="px-3 py-3 text-right">Exit</th>
+                <th className="px-3 py-3 text-right">Notional</th>
+                <th className="px-3 py-3 text-left">Reason</th>
+                <th className="px-3 py-3 text-right">Gross P&L</th>
+                <th className="px-3 py-3 text-right">Fees</th>
+                <th className="px-3 py-3 text-right font-bold text-slate-300">Net P&L</th>
+                <th className="px-4 py-3 text-right">ROI</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800">
+            <tbody className="divide-y divide-slate-800/70">
               {closedTrades.length === 0 && (
-                <tr><td colSpan={15} className="py-6 text-center text-gray-600">No closed trades yet.</td></tr>
+                <tr><td colSpan={13} className="py-10 text-center text-slate-600">No closed trades recorded yet.</td></tr>
               )}
-              {closedTrades.map((trade, i) => (
-                <tr key={i} className="hover:bg-gray-800/50 transition-colors">
-                  <td className="py-3 pr-4 text-gray-400">{trade.time}</td>
-                  <td className="py-3 pr-4 font-bold text-white">{trade.symbol}</td>
-                  <td className="py-3 pr-4"><SideBadge side={trade.side} /></td>
-                  <td className="py-3 pr-4">
-                    <span className={cn(
-                      "rounded px-1.5 py-0.5 text-xs border",
-                      trade.origin === "PAPER_BOOTSTRAP" ? "border-amber-800 bg-amber-900/30 text-amber-400" : "border-gray-700 bg-gray-800 text-gray-400",
+              {closedTrades.map((trade, i) => {
+                const isBinance = trade.source === "BINANCE_TESTNET";
+                const netPositive = trade.netPnl !== "—" && isPositive(trade.netPnl);
+                const netNegative = trade.netPnl !== "—" && !isPositive(trade.netPnl);
+                return (
+                  <tr key={i} className="group hover:bg-slate-800/40 transition-colors">
+                    {/* Time */}
+                    <td className="px-4 py-3 font-mono text-slate-400 whitespace-nowrap">{trade.time}</td>
+
+                    {/* Source badge */}
+                    <td className="px-3 py-3 whitespace-nowrap">
+                      {isBinance ? (
+                        <span className="inline-flex items-center gap-1 rounded border border-yellow-500/25 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-bold text-yellow-300">
+                          <span className="h-1.5 w-1.5 rounded-full bg-yellow-400"></span>Binance
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded border border-blue-500/25 bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-bold text-blue-300">
+                          <span className="h-1.5 w-1.5 rounded-full bg-blue-400"></span>Agent
+                        </span>
+                      )}
+                    </td>
+
+                    {/* Symbol */}
+                    <td className="px-3 py-3 font-bold text-white whitespace-nowrap">{trade.symbol}</td>
+
+                    {/* Side */}
+                    <td className="px-3 py-3">
+                      <span className={cn(
+                        "inline-flex items-center gap-0.5 rounded px-2 py-0.5 text-[10px] font-extrabold tracking-wide",
+                        trade.side === "LONG"
+                          ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                          : "bg-rose-500/10 text-rose-400 border border-rose-500/20",
+                      )}>
+                        {trade.side === "LONG" ? "▲" : "▼"} {trade.side}
+                      </span>
+                    </td>
+
+                    {/* Leverage */}
+                    <td className="px-3 py-3 text-center">
+                      <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-bold text-cyan-300">{trade.leverage}</span>
+                    </td>
+
+                    {/* Entry / Exit */}
+                    <td className="px-3 py-3 text-right font-mono text-slate-300">{trade.entryPrice}</td>
+                    <td className="px-3 py-3 text-right font-mono text-slate-300">{trade.exitPrice}</td>
+
+                    {/* Notional */}
+                    <td className="px-3 py-3 text-right font-mono text-slate-400">{trade.notional}</td>
+
+                    {/* Exit reason */}
+                    <td className="px-3 py-3">
+                      <span className={cn(
+                        "rounded px-1.5 py-0.5 text-[10px] font-medium",
+                        /take.?profit|target/i.test(trade.exitReason)
+                          ? "bg-emerald-500/10 text-emerald-400"
+                          : /stop.?loss|liquidat/i.test(trade.exitReason)
+                          ? "bg-rose-500/10 text-rose-400"
+                          : /entry|bootstrap/i.test(trade.exitReason)
+                          ? "bg-amber-500/10 text-amber-400"
+                          : "bg-slate-800 text-slate-400",
+                      )}>
+                        {trade.exitReason}
+                      </span>
+                    </td>
+
+                    {/* Gross P&L */}
+                    <td className={cn(
+                      "px-3 py-3 text-right font-mono",
+                      trade.grossPnl === "—" ? "text-slate-600" : isPositive(trade.grossPnl) ? "text-emerald-400" : "text-rose-400",
+                    )}>{trade.grossPnl}</td>
+
+                    {/* Fees */}
+                    <td className="px-3 py-3 text-right font-mono text-rose-500/80">{trade.fees}</td>
+
+                    {/* Net P&L — highlighted */}
+                    <td className={cn(
+                      "px-3 py-3 text-right font-mono font-bold",
+                      netPositive ? "text-emerald-400" : netNegative ? "text-rose-400" : "text-slate-500",
                     )}>
-                      {trade.origin}
-                    </span>
-                  </td>
-                  <td className="py-3 pr-4 text-gray-400">{trade.margin}</td>
-                  <td className="py-3 pr-4 text-blue-400">{trade.leverage}</td>
-                  <td className="py-3 pr-4 text-gray-400">{trade.notional}</td>
-                  <td className="py-3 pr-4 text-gray-400">{trade.entryPrice}</td>
-                  <td className="py-3 pr-4 text-gray-400">{trade.exitPrice}</td>
-                  <td className={cn("py-3 pr-4 text-xs", /take.?profit|target/i.test(trade.exitReason) ? "text-emerald-400" : /stop.?loss|liquidation/i.test(trade.exitReason) ? "text-red-400" : "text-gray-400")}>
-                    {trade.exitReason}
-                  </td>
-                  <td className={cn("py-3 pr-4", trade.grossPnl === "—" ? "text-gray-600" : isPositive(trade.grossPnl) ? "text-emerald-400" : "text-red-400")}>
-                    {trade.grossPnl}
-                  </td>
-                  <td className="py-3 pr-4 text-red-500">{trade.fees}</td>
-                  <td className="py-3 pr-4 text-gray-400">{trade.funding}</td>
-                  <td className={cn("py-3 pr-4 font-bold", trade.netPnl === "—" ? "text-gray-600" : isPositive(trade.netPnl) ? "text-emerald-400" : "text-red-400")}>
-                    {trade.netPnl}
-                  </td>
-                  <td className={cn("py-3 font-bold", trade.roi === "—" ? "text-gray-600" : isPositive(trade.roi) ? "text-emerald-400" : "text-red-400")}>
-                    {trade.roi}
-                  </td>
-                </tr>
-              ))}
+                      <span className={cn(
+                        "rounded px-1.5 py-0.5",
+                        netPositive ? "bg-emerald-500/10" : netNegative ? "bg-rose-500/10" : "",
+                      )}>{trade.netPnl}</span>
+                    </td>
+
+                    {/* ROI */}
+                    <td className={cn(
+                      "px-4 py-3 text-right font-mono font-semibold",
+                      trade.roi === "—" ? "text-slate-600" : isPositive(trade.roi) ? "text-emerald-300" : "text-rose-400",
+                    )}>{trade.roi}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

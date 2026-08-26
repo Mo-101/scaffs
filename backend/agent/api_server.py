@@ -48,8 +48,9 @@ AUTOPILOT_RUNS_DIR = Path.home() / ".vibe-trading" / "runs"
 SESSIONS_DIR = Path(__file__).resolve().parent / "sessions"
 UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
 AGENT_DIR = Path(__file__).resolve().parent
-ENV_PATH = AGENT_DIR / ".env"
-ENV_EXAMPLE_PATH = AGENT_DIR / ".env.example"
+WORKSPACE_ENV = Path(__file__).resolve().parents[2] / ".env"
+ENV_PATH = WORKSPACE_ENV if WORKSPACE_ENV.exists() else AGENT_DIR / ".env"
+ENV_EXAMPLE_PATH = (Path(__file__).resolve().parents[2] / ".env.example") if (Path(__file__).resolve().parents[2] / ".env.example").exists() else AGENT_DIR / ".env.example"
 
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
 _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
@@ -413,8 +414,8 @@ class ChannelPairingCommandRequest(BaseModel):
 # ============================================================================
 
 app = FastAPI(
-    title="Vibe-Trading API",
-    description="Vibe-Trading API: natural-language finance research, backtesting, and swarm workflows",
+    title="Scaffs API",
+    description="Scaffs API: natural-language finance research, backtesting, and trading engine",
     version=APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc"
@@ -3292,6 +3293,11 @@ def serve_main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 2
 
+    if ENV_PATH.exists():
+        for k, v in _read_env_values(ENV_PATH).items():
+            if k not in os.environ and v:
+                os.environ[k] = v
+
     if not _is_loopback_bind_host(args.host) and not _configured_api_key():
         print(
             f"[warn] Binding to {args.host} without API_AUTH_KEY set. "
@@ -3299,8 +3305,8 @@ def serve_main(argv: list[str] | None = None) -> int:
             f"but consider using --host 127.0.0.1 for local-only access."
         )
 
-    frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-    frontend_root = Path(__file__).resolve().parent.parent / "frontend"
+    frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    frontend_root = Path(__file__).resolve().parents[2] / "frontend"
 
     vite_proc = None
     if args.dev and frontend_root.exists():
@@ -3328,7 +3334,7 @@ def serve_main(argv: list[str] | None = None) -> int:
         print("[warn] Run: cd frontend && npm run build")
 
     print("=" * 50)
-    print("  Vibe-Trading Server")
+    print("  Scaffs Server")
     print(f"  http://127.0.0.1:{args.port}")
     print("=" * 50)
 

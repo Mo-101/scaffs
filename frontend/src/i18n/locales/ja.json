@@ -113,8 +113,8 @@
     "disconnected": "接続が切断されました"
   },
   "welcome": {
-    "title": "Vibe-Trading",
-    "subtitle": "プロの金融エージェントチームと vibe trading を",
+    "title": "Scaffs",
+    "subtitle": "プロの金融エージェントチームとトレード＆リサーチ",
     "describePrompt": "取引戦略を記述して開始してください。",
     "tryExample": "例を試す:",
     "categories": {

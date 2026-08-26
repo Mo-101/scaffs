@@ -356,6 +356,13 @@ app.post("/sessions/:id/messages", async (req: Request, res: Response) => {
         session.messages.map((m) => ({ role: m.role, content: m.content }))
       );
 
+      // Invariant: ResearchPlan.strategyType is research metadata only.
+      // It must never be passed to any paper-trading worker, signal queue,
+      // or order route. The canonical strategy allowlist is the only
+      // authoritative source for runtime strategy IDs.
+      // eslint-disable-next-line no-console
+      console.info("LLM ResearchPlan received; strategyType is research-only:", researchPlan.strategyType);
+
       // Step 2: Goal Initialization
       const goalId = `goal_${Date.now()}`;
       session.goal = {
@@ -450,13 +457,14 @@ app.post("/sessions/:id/messages", async (req: Request, res: Response) => {
       broadcastSSE(sessionId, "run_card", {
         run_id: runId,
         status: "success",
+        provenance: runDetail.provenance,
         total_return: runDetail.metrics.total_return,
         sharpe: runDetail.metrics.sharpe,
         max_drawdown: runDetail.metrics.max_drawdown,
         codes: [targetSymbol],
       });
 
-      broadcastSSE(sessionId, "metrics", runDetail.metrics);
+      broadcastSSE(sessionId, "metrics", { ...runDetail.metrics, provenance: runDetail.provenance });
       broadcastSSE(sessionId, "pine_script", {
         exists: true,
         content: runDetail.pine_script,
@@ -983,12 +991,7 @@ app.get("/paper-sessions/provider-health", (req: Request, res: Response) => {
 app.get("/paper-sessions/decision-health", (req: Request, res: Response) => {
   const nowIso = new Date().toISOString();
   const allWorkerIds = [
-    "control_5m_futures",
-    "candidate_5m_futures",
-    "control_10m_futures",
-    "candidate_10m_futures",
-    "control_15m_futures",
-    "candidate_15m_futures",
+    "rebalance_equal_weight_v1",
     "grid_futures_5x_v3",
     "grid_futures_10x_v3",
     "morning_glory_futures",
@@ -1112,81 +1115,7 @@ app.post("/paper-sessions/switch-testnet", (req: Request, res: Response) => {
 });
 
 app.get("/paper-sessions/shadow-comparison", (req: Request, res: Response) => {
-  const rows = [
-    {
-      regimen: "5m_futures_10k",
-      control_session_id: "control_5m_futures",
-      candidate_session_id: "candidate_5m_futures",
-      control: {
-        ...PAPER_SESSIONS_MAP.get("control_5m_futures"),
-        net_return: 0.184,
-        trade_count: 24,
-        rebalance_fees: 32.4,
-        total_fees: 48.6,
-        turnover: 3.2,
-        max_drawdown: 0.048,
-        tracking_error_rms: 0.012,
-        max_weight_drift: 0.04,
-        reconciled: true,
-      },
-      candidate: {
-        ...PAPER_SESSIONS_MAP.get("candidate_5m_futures"),
-        net_return: 0.286,
-        trade_count: 36,
-        rebalance_fees: 44.2,
-        total_fees: 62.1,
-        turnover: 4.8,
-        max_drawdown: 0.062,
-        tracking_error_rms: 0.018,
-        max_weight_drift: 0.05,
-        reconciled: true,
-      },
-      delta: {
-        net_return: 0.102,
-        total_fees: 13.5,
-        trade_count: 12,
-        turnover: 1.6,
-        max_drawdown: 0.014,
-      },
-    },
-    {
-      regimen: "15m_futures_10k",
-      control_session_id: "control_15m_futures",
-      candidate_session_id: "candidate_15m_futures",
-      control: {
-        ...PAPER_SESSIONS_MAP.get("control_15m_futures"),
-        net_return: 0.142,
-        trade_count: 16,
-        rebalance_fees: 22.1,
-        total_fees: 34.0,
-        turnover: 2.1,
-        max_drawdown: 0.038,
-        tracking_error_rms: 0.009,
-        max_weight_drift: 0.03,
-        reconciled: true,
-      },
-      candidate: {
-        ...PAPER_SESSIONS_MAP.get("candidate_15m_futures"),
-        net_return: 0.224,
-        trade_count: 22,
-        rebalance_fees: 30.5,
-        total_fees: 45.2,
-        turnover: 3.0,
-        max_drawdown: 0.046,
-        tracking_error_rms: 0.014,
-        max_weight_drift: 0.04,
-        reconciled: true,
-      },
-      delta: {
-        net_return: 0.082,
-        total_fees: 11.2,
-        trade_count: 6,
-        turnover: 0.9,
-        max_drawdown: 0.008,
-      },
-    },
-  ];
-  res.json(rows);
+  res.json({ deprecated: true, rows: [] });
 });
 
 app.get("/paper-trading/notifications", (req: Request, res: Response) => {
@@ -1360,23 +1289,29 @@ app.put("/settings/llm", (req: Request, res: Response) => {
   res.json(llmSettingsState);
 });
 
+const _binanceMode = (process.env.BINANCE_TRADING_MODE || "testnet").toLowerCase();
+const _binanceConfigured =
+  _binanceMode === "paper"
+    ? false
+    : _binanceMode === "testnet"
+    ? Boolean(process.env.BINANCE_TESTNET_API_KEY)
+    : Boolean(process.env.BINANCE_PROD_API_KEY) && process.env.BINANCE_PRODUCTION_ENABLED === "true";
+
 let dataSourceSettingsState = {
   active_market_feed: "okx",
-  binance_configured: Boolean(process.env.BINANCE_API_KEY),
-  binance_key_hint: process.env.BINANCE_API_KEY ? "••••" + process.env.BINANCE_API_KEY.slice(-4) : "Public REST & WebSocket ready",
+  binance_configured: _binanceConfigured,
+  binance_mode: _binanceMode,
   okx_configured: true,
-  okx_key_hint: process.env.OKX_API_KEY ? "••••" + process.env.OKX_API_KEY.slice(-4) : "Public Market & Futures Feed Active",
   bybit_configured: Boolean(process.env.BYBIT_API_KEY),
-  bybit_key_hint: process.env.BYBIT_API_KEY ? "••••" + process.env.BYBIT_API_KEY.slice(-4) : "Public V5 REST & WS ready",
   gateio_configured: Boolean(process.env.GATEIO_API_KEY),
-  gateio_key_hint: process.env.GATEIO_API_KEY ? "••••" + process.env.GATEIO_API_KEY.slice(-4) : "Public V4 Spot & Futures ready",
   providers: [
     {
       id: "binance",
       name: "Binance",
       status: "connected",
       latency_ms: 45,
-      configured: Boolean(process.env.BINANCE_API_KEY),
+      configured: _binanceConfigured,
+      mode: _binanceMode,
       capabilities: ["Spot", "USD-M Futures", "Coin-M Futures", "WebSocket Streams", "Order Book Depth"],
       public_access: true,
       default_url: "https://api.binance.com",
@@ -1435,34 +1370,26 @@ app.put("/settings/data-sources", (req: Request, res: Response) => {
 
   if (binance_api_key) {
     dataSourceSettingsState.binance_configured = true;
-    dataSourceSettingsState.binance_key_hint = "••••" + binance_api_key.slice(-4);
   } else if (clear_binance_key) {
     dataSourceSettingsState.binance_configured = false;
-    dataSourceSettingsState.binance_key_hint = "Public REST & WebSocket ready";
   }
 
   if (okx_api_key) {
     dataSourceSettingsState.okx_configured = true;
-    dataSourceSettingsState.okx_key_hint = "••••" + okx_api_key.slice(-4);
   } else if (clear_okx_key) {
     dataSourceSettingsState.okx_configured = false;
-    dataSourceSettingsState.okx_key_hint = "Public Market & Futures Feed Active";
   }
 
   if (bybit_api_key) {
     dataSourceSettingsState.bybit_configured = true;
-    dataSourceSettingsState.bybit_key_hint = "••••" + bybit_api_key.slice(-4);
   } else if (clear_bybit_key) {
     dataSourceSettingsState.bybit_configured = false;
-    dataSourceSettingsState.bybit_key_hint = "Public V5 REST & WS ready";
   }
 
   if (gateio_api_key) {
     dataSourceSettingsState.gateio_configured = true;
-    dataSourceSettingsState.gateio_key_hint = "••••" + gateio_api_key.slice(-4);
   } else if (clear_gateio_key) {
     dataSourceSettingsState.gateio_configured = false;
-    dataSourceSettingsState.gateio_key_hint = "Public V4 Spot & Futures ready";
   }
 
   if (active_market_feed) {

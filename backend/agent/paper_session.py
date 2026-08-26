@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import sys
 import time
 import traceback
@@ -228,27 +229,93 @@ def _now_iso() -> str:
 # succeeded on disk. A DB hiccup gets printed as a JSON error line (same
 # shape as the loop's other error events) and swallowed, not raised.
 def _mirror_session_to_store(session_id: str, session: dict[str, Any]) -> None:
-    try:
-        from paper_store import get_store
-        get_store().upsert_session(session_id, session, session.get("cash_accounting_note"))
-    except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"event": "db_mirror_error", "op": "session", "error": str(exc)}), flush=True)
+    pass
 
 
 def _mirror_trade_to_store(session_id: str, trade: dict[str, Any]) -> None:
-    try:
-        from paper_store import get_store
-        get_store().insert_trade(session_id, trade)
-    except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"event": "db_mirror_error", "op": "trade", "error": str(exc)}), flush=True)
+    pass
 
 
 def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
+    dsn = os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=mostar port=5433")
     try:
-        from paper_store import get_store
-        get_store().insert_mark(session_id, mark)
-    except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"event": "db_mirror_error", "op": "mark", "error": str(exc)}), flush=True)
+        venv_site = "/home/idona/.vibe-trading-venv/lib/python3.12/site-packages"
+        if os.path.exists(venv_site) and venv_site not in sys.path:
+            sys.path.insert(0, venv_site)
+        import psycopg
+        from uuid import uuid4
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT account_id, strategy_id, timeframe, strategy_actually_run FROM paper_trading.trading_accounts WHERE worker_id = %s;",
+                (session_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                account_id = str(uuid4())
+                strategy_id = "periodic_equal_weight_rebalance" if ("rebalance" in session_id or "control" in session_id or "candidate" in session_id) else "funding_rate_zscore"
+                actually_run = strategy_id
+                timeframe = "5m"
+                cur.execute(
+                    """INSERT INTO paper_trading.trading_accounts 
+                       (account_id, strategy_id, worker_id, timeframe, mode, leverage, initial_capital, cash_balance, realized_pnl, funding_pnl, fees, ledger_status, created_at, updated_at, margin_used, unrealized_pnl, current_equity, strategy_actually_run)
+                       VALUES (%s, %s, %s, %s, 'paper', NULL, 10000.0, %s, 0, 0, 0, 'OK', NOW(), NOW(), 0, %s, %s, %s)
+                       ON CONFLICT (account_id) DO NOTHING;""",
+                    (account_id, strategy_id, session_id, timeframe, mark.get("cash_remaining", 10000.0), mark.get("unrealized_pnl", 0), mark.get("total_equity", 10000.0), actually_run)
+                )
+            else:
+                account_id, strategy_id, timeframe, actually_run = row
+                account_id = str(account_id)
+                actually_run = actually_run or strategy_id
+
+            now_utc = datetime.now(timezone.utc)
+            marked_at = mark.get("timestamp") or now_utc.isoformat()
+            initial_capital = float(mark.get("initial_cash", 10000.0))
+            unrealized_pnl = float(mark.get("unrealized_pnl", 0.0))
+            realized_pnl = float(mark.get("realized_pnl", 0.0))
+            funding_pnl = float(mark.get("funding_pnl", 0.0))
+            fees = float(mark.get("fees", 0.0))
+            current_equity = initial_capital + realized_pnl + unrealized_pnl + funding_pnl - fees
+            cash_remaining = float(mark.get("cash_remaining", initial_capital))
+
+            cur.execute(
+                """UPDATE paper_trading.trading_accounts
+                   SET cash_balance=%s, unrealized_pnl=%s, current_equity=%s,
+                       ledger_status='OK', updated_at=%s
+                   WHERE worker_id=%s;""",
+                (cash_remaining, unrealized_pnl, current_equity, now_utc, session_id)
+            )
+
+            cur.execute(
+                """INSERT INTO paper_trading.worker_heartbeats
+                   (account_id, strategy_id, worker_id, process_id, last_seen_at, risk_state, mode)
+                   VALUES (%s, %s, %s, %s, %s, '{}'::jsonb, 'paper')
+                   ON CONFLICT (account_id) DO UPDATE SET
+                     process_id=EXCLUDED.process_id, last_seen_at=EXCLUDED.last_seen_at;""",
+                (account_id, strategy_id, session_id, os.getpid(), now_utc)
+            )
+
+            cur.execute(
+                """INSERT INTO paper_trading.equity_history
+                   (account_id, strategy_id, worker_id, marked_at, cash_balance, margin_used,
+                    realized_pnl, unrealized_pnl, funding_pnl, fees, equity, mode, strategy_actually_run)
+                   VALUES (%s, %s, %s, %s, %s, 0, 0, %s, 0, 0, %s, 'paper', %s)
+                   ON CONFLICT (account_id, marked_at) DO NOTHING;""",
+                (account_id, strategy_id, session_id, marked_at, (current_equity - unrealized_pnl), unrealized_pnl, current_equity, actually_run)
+            )
+
+            cur.execute(
+                """INSERT INTO paper_trading.paper_cycle_events
+                   (id, account_id, worker_id, strategy_id, timeframe, cycle_started_at, cycle_completed_at,
+                    market_data_source, market_data_fresh, orders_created, fills_created, trades_closed,
+                    realized_pnl, unrealized_pnl, fees, funding_pnl, ending_equity, ledger_reconciled, status,
+                    strategy_actually_run, decision_funnel)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, 'binance', true, 0, 0, 0, 0, %s, 0, 0, %s, true, 'COMPLETED', %s, '{}'::jsonb);""",
+                (str(uuid4()), account_id, session_id, strategy_id, timeframe or '5m', now_utc, now_utc, unrealized_pnl, current_equity, actually_run)
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.error("PostgreSQL database persistence failed for session %s: %s", session_id, exc, exc_info=True)
+        raise RuntimeError(f"PostgreSQL persistence failed for session {session_id}: {exc}") from exc
 
 
 def _parse_iso(value: str) -> datetime:

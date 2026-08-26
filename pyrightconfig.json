@@ -1,0 +1,17 @@
+{
+  "include": [
+    "backend/agent/src",
+    "backend/agent/tests"
+  ],
+  "extraPaths": [
+    "backend/agent/src"
+  ],
+  "venvPath": "/home/idona",
+  "venv": ".scaffs-venv",
+  "pythonPlatform": "Linux",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportMissingModuleSource": "none",
+  "reportMissingImports": "warning",
+  "useLibraryCodeForTypes": true
+}

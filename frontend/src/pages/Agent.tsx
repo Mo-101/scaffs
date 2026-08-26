@@ -374,7 +374,7 @@ export function Agent() {
             agentMsgs.push({ id: m.message_id + "_ans", type: "answer", content: m.content, timestamp: ts });
           }
           if (metrics && Object.keys(metrics).length > 0) {
-            agentMsgs.push({ id: m.message_id, type: "run_complete", content: "", runId, metrics, timestamp: ts + 1 });
+            agentMsgs.push({ id: m.message_id, type: "run_complete", content: "", runId, metrics, provenance: m.provenance as AgentMessage["provenance"], timestamp: ts + 1 });
           } else {
             // Fetch run data to check report-worthiness; show fallback card if fetch fails
             let fetchedMetrics: Record<string, number> | undefined;
@@ -400,6 +400,7 @@ export function Agent() {
                 runId,
                 metrics: fetchedMetrics,
                 equityCurve: fetchedCurve,
+                provenance: (runData as any)?.provenance as AgentMessage["provenance"] || "synthetic_research",
                 timestamp: ts + 1,
               });
             }

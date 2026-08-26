@@ -119,8 +119,8 @@
     "disconnected": "Connection lost"
   },
   "welcome": {
-    "title": "Vibe-Trading",
-    "subtitle": "vibe trading with your professional financial agent team",
+    "title": "Scaffs",
+    "subtitle": "Financial AI agent team & algorithmic trading platform",
     "describePrompt": "Describe a trading strategy to get started.",
     "tryExample": "Try an example:",
     "categories": {
@@ -256,7 +256,7 @@
     "clearApiKey": "Clear saved API key",
     "channels": {
       "title": "IM Channels",
-      "description": "Connect chat adapters to the same Vibe-Trading session runtime used by the Web UI and CLI.",
+      "description": "Connect chat adapters to the same Scaffs session runtime used by the Web UI and CLI.",
       "runtime": "Runtime",
       "running": "Running",
       "stopped": "Stopped",

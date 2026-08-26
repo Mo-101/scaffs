@@ -420,7 +420,10 @@ class SignalQueueManager:
         os.environ.setdefault("MAX_OPEN_POSITIONS", "100")
         os.environ.setdefault("TRADE_COOLDOWN_SECONDS", "0")
         os.environ.setdefault("MAX_MARKET_DATA_AGE_SECONDS", "1000")
-        os.environ.setdefault("ALLOWED_SYMBOLS", "BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT")
+        if (os.getenv("TRADING_ENV") or "").strip().lower() == "binance_testnet":
+            os.environ.setdefault("ALLOWED_SYMBOLS", "*")
+        else:
+            os.environ.setdefault("ALLOWED_SYMBOLS", "BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT")
 
         # 4. Compute price and requested leverage
         client = get_binance_futures_client()

@@ -160,7 +160,7 @@ def evaluate_pre_trade(
     if previous_intent_exists:
         reasons.append("DUPLICATE_INTENT")
 
-    if symbol not in config.allowed_symbols:
+    if "*" not in config.allowed_symbols and symbol not in config.allowed_symbols:
         reasons.append("SYMBOL_NOT_ALLOWED")
 
     if intent.market_snapshot.symbol.strip().upper() != symbol:

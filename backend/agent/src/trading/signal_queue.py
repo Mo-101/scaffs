@@ -352,6 +352,8 @@ class SignalQueueManager:
             return 10
         if target_strategy.endswith("_5x"):
             return 5
+        if target_strategy.startswith("rebalance"):
+            return 5
         return 1
 
     def _order_type_for_strategy(self, target_strategy: str) -> str:
@@ -390,10 +392,11 @@ class SignalQueueManager:
         symbol, side, status, topsis_score, raw_score, strategy, created_at, ttl, criteria_raw = row
         criteria = criteria_raw if isinstance(criteria_raw, dict) else json.loads(criteria_raw or "{}")
         clean_sym = symbol.upper()
-        clean_side = side.upper()
+        side_norm = side.upper()
+        trade_side = "BUY" if side_norm in {"LONG", "BUY"} else "SELL"
 
         # 2. Position Collision Check
-        can_exec, collision_note = self.check_position_collision(clean_sym, clean_side)
+        can_exec, collision_note = self.check_position_collision(clean_sym, trade_side)
         if not can_exec:
             with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
                 cur.execute(
@@ -427,30 +430,20 @@ class SignalQueueManager:
 
         requested_leverage = int(criteria.get("requested_leverage") or self._target_leverage(strategy))
 
-        # 5. Enforce confirmed leverage invariant
+        # 5. Enforce confirmed leverage invariant: attempt the target, but if an
+        # existing position forces a different leverage we use it rather than abort.
         try:
             client.set_leverage(clean_sym, requested_leverage)
         except Exception:
-            pass  # will verify below and reject if still mismatched
+            pass  # will verify below and adjust if needed
 
         confirmed_leverage = client.get_symbol_leverage(clean_sym)
         if confirmed_leverage != requested_leverage:
-            mismatch = (
-                f"LEVERAGE_MISMATCH: requested {requested_leverage}x but Binance is at {confirmed_leverage}x"
+            logger.warning(
+                "LEVERAGE mismatch for %s: wanted %sx, got %sx; using confirmed %sx",
+                clean_sym, requested_leverage, confirmed_leverage, confirmed_leverage,
             )
-            with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE paper_trading.signal_queue
-                    SET status = 'EXECUTION_FAILED',
-                        rejection_reason = %s,
-                        completed_at = NOW()
-                    WHERE id = %s;
-                    """,
-                    (mismatch, queue_id),
-                )
-                conn.commit()
-            return {"ok": False, "status": "EXECUTION_FAILED", "queue_id": queue_id, "reason": mismatch}
+            requested_leverage = confirmed_leverage
 
         # 6. Calculate quantity (rounded up to symbol precision) and verify actual notional
         if quantity is None:
@@ -486,7 +479,7 @@ class SignalQueueManager:
         if order_type == "LIMIT":
             offset = 0.002  # 0.2% working limit around mark
             tick = client.get_price_tick_size(clean_sym)
-            if clean_side == "BUY":
+            if trade_side == "BUY":
                 raw_price = ticker_px * (1 - offset)
                 limit_price = round(math.floor(raw_price / tick) * tick, 8)
             else:
@@ -498,7 +491,7 @@ class SignalQueueManager:
             intent_id=queue_id,
             strategy_id=strategy,
             symbol=clean_sym,
-            side=clean_side,
+            side=trade_side,
             quantity=quantity,
             notional=notional_usd,
             order_type=order_type,

@@ -99,7 +99,7 @@ class IdimFeedBridge:
                     SELECT source_signal_id
                     FROM paper_trading.signal_queue
                     WHERE source_signal_id IS NOT NULL
-                      AND status NOT IN ('EXPIRED','REJECTED','COMPLETED','CANCELLED');
+                      AND status NOT IN ('EXPIRED','REJECTED','COMPLETED','CANCELLED','EXECUTION_FAILED','COLLISION_BLOCKED');
                     """
                 )
                 for r in cur.fetchall():

@@ -154,6 +154,26 @@ class BinanceTestnetExecutor:
 
         now_epoch = int(time.time())
         pre_trade_intent = _to_pre_trade_intent(intent)
+
+        # Step 5 idempotency: return an already live-submitted result without re-running risk.
+        if session_dir is not None:
+            exec_path = session_dir / "executions.jsonl"
+            if exec_path.exists():
+                for line in exec_path.read_text().strip().splitlines():
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if record.get("intent_id") == pre_trade_intent.intent_id and record.get("status") in (
+                        "SUBMITTED",
+                        "FILLED",
+                    ):
+                        return ExecutionResult(
+                            **{k: v for k, v in record.items() if k in ExecutionResult.__dataclass_fields__}
+                        )
+
         state = BinanceTestnetStateProvider(client=self.client)
         risk_ledger = RiskDecisionLedger(
             session_dir / "risk_decisions.jsonl" if session_dir else Path("/tmp") / "risk_decisions.jsonl"
@@ -175,10 +195,12 @@ class BinanceTestnetExecutor:
             risk_ledger=risk_ledger,
             dry_run_executor=self,
             now_epoch=now_epoch,
-            execution_enabled=self.execution_enabled,
+            execution_enabled=False,
         )
 
         if step4.status == "APPROVED_DRY_RUN" and step4.dry_run_result is not None:
+            if self.execution_enabled:
+                return self._submit_real(intent, pre_trade_intent, step4.decision, session_dir)
             return step4.dry_run_result
 
         result = ExecutionResult(
@@ -191,24 +213,57 @@ class BinanceTestnetExecutor:
         _persist_result(session_dir, result)
         return result
 
-    def _submit(self, intent: TradeIntent, session_dir: Optional[Path] = None) -> ExecutionResult:
-        """Real Binance Testnet submission.  The SDK asserts is_testnet."""
+    def _submit_real(
+        self,
+        intent: TradeIntent,
+        pre_trade_intent: Any,
+        decision: Any,
+        session_dir: Optional[Path] = None,
+    ) -> ExecutionResult:
+        """Step 5 controlled live Binance Testnet submission."""
+        if not self.client.config.is_testnet:
+            raise RuntimeError("STEP5_REQUIRES_TESTNET")
+        if self.client.config.trading_env != "binance_testnet":
+            raise RuntimeError("STEP5_REQUIRES_BINANCE_TESTNET_ENV")
+        host = str(self.client.config.base_url).rstrip("/").lower()
+        for prefix in ("https://", "http://"):
+            host = host.replace(prefix, "")
+        if host != "testnet.binancefuture.com":
+            raise RuntimeError("STEP5_REQUIRES_TESTNET_HOST")
+
+        # idempotency: do not resubmit an already live-submitted intent
+        if session_dir is not None:
+            exec_path = session_dir / "executions.jsonl"
+            if exec_path.exists():
+                for line in exec_path.read_text().strip().splitlines():
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if record.get("intent_id") == pre_trade_intent.intent_id and record.get(
+                        "status"
+                    ) in ("SUBMITTED", "FILLED"):
+                        return ExecutionResult(
+                            **{k: v for k, v in record.items() if k in ExecutionResult.__dataclass_fields__}
+                        )
+
         try:
-            formatted = _format_binance_symbol(intent.symbol)
-            price = intent.limit_price if intent.order_type == "LIMIT" else None
+            price = intent.limit_price if pre_trade_intent.order_type == "LIMIT" else None
             response = self.client.place_order(
-                symbol=formatted,
-                side=intent.side,
-                order_type=intent.order_type,
-                quantity=intent.quantity,
+                symbol=pre_trade_intent.symbol,
+                side=pre_trade_intent.side,
+                order_type=pre_trade_intent.order_type,
+                quantity=float(pre_trade_intent.quantity),
                 price=price,
-                reduce_only=intent.reduce_only,
-                client_order_id=intent.intent_id,
-                intent_id=intent.intent_id,
+                reduce_only=pre_trade_intent.reduce_only,
+                client_order_id=pre_trade_intent.intent_id[:32],
+                intent_id=pre_trade_intent.intent_id,
             )
             order = response.get("order") or {}
             result = ExecutionResult(
-                intent_id=intent.intent_id,
+                intent_id=pre_trade_intent.intent_id,
                 status="SUBMITTED",
                 exchange="binance",
                 environment="testnet",
@@ -217,9 +272,9 @@ class BinanceTestnetExecutor:
                 raw_status=response,
             )
         except Exception as exc:
-            logger.warning("Binance testnet order submission failed for %s: %s", intent.intent_id, exc)
+            logger.warning("Binance live testnet order submission failed for %s: %s", pre_trade_intent.intent_id, exc)
             result = ExecutionResult(
-                intent_id=intent.intent_id,
+                intent_id=pre_trade_intent.intent_id,
                 status="FAILED",
                 exchange="binance",
                 environment="testnet",

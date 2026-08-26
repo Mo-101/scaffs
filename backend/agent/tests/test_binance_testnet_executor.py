@@ -112,7 +112,7 @@ def test_submit_rejects_oversized_intent(tmp_path, monkeypatch):
     assert (tmp_path / "executions.jsonl").exists()
 
 
-def test_execution_enabled_true_raises_step4_guard(tmp_path, monkeypatch):
+def test_execution_enabled_true_submits_real(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_ENABLED", "true")
     monkeypatch.setenv("MAX_TRADE_NOTIONAL_USDT", "100000")
     monkeypatch.setenv("MAX_POSITION_NOTIONAL_USDT", "100000")
@@ -122,9 +122,30 @@ def test_execution_enabled_true_raises_step4_guard(tmp_path, monkeypatch):
     client = _mock_client()
     executor = BinanceTestnetExecutor(client=client)
     intent = _minimal_intent()
-    with pytest.raises(RuntimeError, match="STEP4_EXECUTION_MUST_REMAIN_DISABLED"):
-        executor.submit(intent, session_dir=tmp_path)
-    client.place_order.assert_not_called()
+    result = executor.submit(intent, session_dir=tmp_path)
+
+    assert result.status == "SUBMITTED"
+    assert client.place_order.called is True
+    assert (tmp_path / "risk_decisions.jsonl").exists()
+    assert (tmp_path / "executions.jsonl").exists()
+
+
+def test_live_submission_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("MAX_TRADE_NOTIONAL_USDT", "100000")
+    monkeypatch.setenv("MAX_POSITION_NOTIONAL_USDT", "100000")
+    monkeypatch.setenv("MIN_AVAILABLE_BALANCE_USDT", "1")
+    monkeypatch.setenv("MAX_MARKET_DATA_AGE_SECONDS", "1000000")
+
+    client = _mock_client()
+    executor = BinanceTestnetExecutor(client=client)
+    intent = _minimal_intent()
+    first = executor.submit(intent, session_dir=tmp_path)
+    second = executor.submit(intent, session_dir=tmp_path)
+
+    assert first.status == "SUBMITTED"
+    assert second.status == "SUBMITTED"
+    assert client.place_order.call_count == 1
 
 
 def test_submit_dry_run_method_returns_dry_run(tmp_path):

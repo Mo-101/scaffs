@@ -41,6 +41,7 @@ import time
 import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,6 +64,15 @@ from accounting.futures_ledger import (
     open_position as ledger_open_position,
     ZERO,
 )
+
+try:
+    from src.trading.trade_intent import TradeIntent
+    from src.trading.connectors.binance.binance_testnet_executor import (
+        submit_binance_testnet_intent,
+    )
+except Exception:
+    TradeIntent = None  # type: ignore[misc,assignment]
+    submit_binance_testnet_intent = None  # type: ignore[misc,assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -1472,6 +1482,7 @@ def rebalance_if_due(
     interval = timedelta(hours=session["rebalance_interval_hours"])
     wall_clock_now = datetime.now(timezone.utc)
     timestamp = now if now is not None else _now_iso()
+    trading_env = (os.getenv("TRADING_ENV") or "").strip().lower()
 
     # Risk checks run on every call, even when rebalance is not due.
     prices = dict(prices) if prices is not None else fetch_last_prices(session["symbols"])
@@ -1584,6 +1595,28 @@ def rebalance_if_due(
         executed.append(trade)
         _append_jsonl(session_dir / "trades.jsonl", trade)
         _mirror_trade_to_store(session_dir.name, trade)
+        if submit_binance_testnet_intent is not None and trading_env == "binance_testnet" and TradeIntent is not None:
+            intent = TradeIntent(
+                intent_id=str(uuid.uuid4()),
+                strategy_id=session.get("strategy_id", session_dir.name),
+                symbol=code,
+                side="SELL",
+                quantity=abs(delta_qty),
+                notional=notional,
+                order_type="MARKET",
+                reduce_only=False,
+                reason="rebalance",
+                signal_timestamp=timestamp,
+                market_snapshot={
+                    "symbol": code,
+                    "price": prices[code],
+                    "timestamp": timestamp,
+                    "source": trading_env,
+                },
+                trading_env=trading_env,
+                execution_enabled=False,
+            )
+            submit_binance_testnet_intent(intent, session_dir=session_dir)
 
     # After sells settle, this is the only cash we can spend on buys.
     buy_budget = max(0.0, cash_remaining)
@@ -1660,6 +1693,28 @@ def rebalance_if_due(
         executed.append(trade)
         _append_jsonl(session_dir / "trades.jsonl", trade)
         _mirror_trade_to_store(session_dir.name, trade)
+        if submit_binance_testnet_intent is not None and trading_env == "binance_testnet" and TradeIntent is not None:
+            intent = TradeIntent(
+                intent_id=str(uuid.uuid4()),
+                strategy_id=session.get("strategy_id", session_dir.name),
+                symbol=code,
+                side="BUY",
+                quantity=delta_qty,
+                notional=notional,
+                order_type="MARKET",
+                reduce_only=False,
+                reason="rebalance",
+                signal_timestamp=timestamp,
+                market_snapshot={
+                    "symbol": code,
+                    "price": prices[code],
+                    "timestamp": timestamp,
+                    "source": trading_env,
+                },
+                trading_env=trading_env,
+                execution_enabled=False,
+            )
+            submit_binance_testnet_intent(intent, session_dir=session_dir)
 
     if abs(cash_remaining) < 1e-9:
         cash_remaining = 0.0

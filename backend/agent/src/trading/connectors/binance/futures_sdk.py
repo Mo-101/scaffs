@@ -18,6 +18,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, Mapping, Optional, Union
 
@@ -262,6 +263,8 @@ class BinanceFuturesClient:
 
     def __init__(self, config: BinanceFuturesConfig | None = None):
         self.config = config or BinanceFuturesConfig.from_env()
+        self._exchange_info: Optional[dict[str, Any]] = None
+        self._exchange_info_at: float = 0.0
 
     def _require_testnet(self, operation: str = "order submission") -> None:
         """Fail-closed guard: all order mutations must target Binance Testnet."""
@@ -364,6 +367,27 @@ class BinanceFuturesClient:
         """Fetch exchange server time in milliseconds."""
         res = self._request("GET", "/fapi/v1/time", signed=False)
         return int(res.get("serverTime", 0))
+
+    def _load_exchange_info(self) -> dict[str, Any]:
+        """Fetch exchangeInfo and cache it for 1 hour."""
+        now = time.time()
+        if self._exchange_info is not None and now - self._exchange_info_at < 3600:
+            return self._exchange_info
+        self._exchange_info = self._request("GET", "/fapi/v1/exchangeInfo", signed=False)
+        self._exchange_info_at = now
+        return self._exchange_info
+
+    def _get_symbol_filters(self, symbol: str) -> dict[str, Any]:
+        """Return the filters dict for a normalized Binance symbol."""
+        info = self._load_exchange_info()
+        fmt = _format_symbol(symbol)
+        for s in info.get("symbols", []):
+            if s.get("symbol", "").upper() == fmt:
+                return {f.get("filterType", ""): f for f in s.get("filters", [])}
+        return {}
+
+    def _filter_value(self, filters: dict[str, Any], filter_type: str, key: str, default: Any) -> Any:
+        return filters.get(filter_type, {}).get(key, default)
 
     def get_account_balance(self) -> list[dict[str, Any]]:
         """Fetch user futures account balances (e.g. USDT, BNB, USDC)."""
@@ -512,27 +536,26 @@ class BinanceFuturesClient:
         return self._request("GET", "/fapi/v1/order", params=params, signed=True)
 
     def get_price_tick_size(self, symbol: str) -> float:
-        """Return the minimum price tick size for a symbol (sane testnet defaults)."""
-        defaults = {
-            "BTCUSDT": 0.1,
-            "ETHUSDT": 0.01,
-            "SOLUSDT": 0.01,
-            "BNBUSDT": 0.01,
-            "DOGEUSDT": 0.0001,
-            "XRPUSDT": 0.0001,
-            "ADAUSDT": 0.0001,
-        }
-        return defaults.get(symbol.upper().replace("-", "").replace("/", ""), 0.01)
+        """Return the minimum price tick size for a symbol from exchange filters."""
+        filters = self._get_symbol_filters(symbol)
+        tick = self._filter_value(filters, "PRICE_FILTER", "tickSize", None)
+        if tick is not None:
+            return float(tick)
+        return 0.01
 
     def get_quantity_precision(self, symbol: str) -> int:
-        defaults = {
-            "BTCUSDT": 3, "ETHUSDT": 3, "SOLUSDT": 1, "BNBUSDT": 2,
-            "DOGEUSDT": 0, "XRPUSDT": 1, "ADAUSDT": 0, "AAVEUSDT": 1,
-            "SUIUSDT": 1, "TAOUSDT": 3, "LTCUSDT": 3, "BCHUSDT": 3,
-            "UNIUSDT": 0, "1000PEPEUSDT": 0, "PENGUUSDT": 0, "WLDUSDT": 0,
-            "HYPEUSDT": 1, "LITUSDT": 0, "UAIUSDT": 0, "PAXGUSDT": 3, "ZECUSDT": 3
-        }
-        return defaults.get(symbol.upper(), 1)
+        """Return the number of quantity decimals from LOT_SIZE / MARKET_LOT_SIZE."""
+        filters = self._get_symbol_filters(symbol)
+        for filter_type in ("MARKET_LOT_SIZE", "LOT_SIZE"):
+            step = self._filter_value(filters, filter_type, "stepSize", None)
+            if step is not None:
+                try:
+                    d = Decimal(str(step)).normalize()
+                    exp = d.as_tuple().exponent
+                    return -int(exp)
+                except Exception:
+                    pass
+        return 1
 
     def place_order(
         self,
@@ -576,7 +599,12 @@ class BinanceFuturesClient:
 
         if quantity is not None:
             prec = self.get_quantity_precision(formatted_symbol)
-            params["quantity"] = str(int(round(quantity))) if prec == 0 else f"{quantity:.{prec}f}"
+            if prec == 0:
+                params["quantity"] = str(int(round(quantity)))
+            elif prec < 0:
+                params["quantity"] = str(int(round(quantity, prec)))
+            else:
+                params["quantity"] = f"{quantity:.{prec}f}"
         if price is not None and order_type.upper() != "MARKET":
             params["price"] = f"{price:.8f}".rstrip("0").rstrip(".")
             params["timeInForce"] = time_in_force

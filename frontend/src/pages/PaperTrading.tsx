@@ -300,9 +300,10 @@ const OperationsSummary: React.FC<{
   providerHealth: PaperProviderHealth | null;
   providerHealthError: string | null;
   decisionHealth: PaperDecisionHealth | null;
+  binanceTestnetStatus: { ok?: boolean; configured?: boolean } | null;
   refreshAgeMs: number | null;
   nowMs: number;
-}> = ({ sessions, providerHealth, providerHealthError, decisionHealth, refreshAgeMs, nowMs }) => {
+}> = ({ sessions, providerHealth, providerHealthError, decisionHealth, binanceTestnetStatus, refreshAgeMs, nowMs }) => {
   const workers = sessions?.filter((session) => session.database_account) ?? [];
   const freshWorkers = workers.filter((session) => {
     const heartbeat = session.database_account?.last_heartbeat;
@@ -314,13 +315,17 @@ const OperationsSummary: React.FC<{
   const evaluated = decisionWorkers.reduce((total, worker) => total + worker.window.signals_evaluated, 0);
   const fills = decisionWorkers.reduce((total, worker) => total + worker.window.paper_orders_filled, 0);
   const apiState = refreshAgeMs !== null && refreshAgeMs <= SESSION_POLL_INTERVAL_MS * 3 ? "Connected" : "Refresh delayed";
+  const isTestnet = binanceTestnetStatus?.ok && binanceTestnetStatus?.configured;
+  const execLabel = isTestnet ? "BINANCE TESTNET" : "PAPER";
+  const execColor = isTestnet ? "text-emerald-300" : "text-sky-300";
+  const execDesc = isTestnet ? "Live testnet execution. Paper remains fallback." : "Paper execution only. Live capital execution remains disabled.";
 
   return (
     <section className="mb-5 border border-gray-800 bg-gray-950/45" aria-label="Paper operations summary">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">Operations</p>
-          <p className="mt-1 text-sm text-gray-50">Paper execution only. Live capital execution remains disabled.</p>
+          <p className="mt-1 text-sm text-gray-50">{execDesc}</p>
         </div>
         <span className={cn(
           "rounded border px-2 py-1 text-xs font-semibold",
@@ -328,7 +333,7 @@ const OperationsSummary: React.FC<{
         )}>{apiState}</span>
       </div>
       <dl className="grid divide-y divide-gray-800 sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-5">
-        <div className="px-4 py-3"><dt className="text-xs text-gray-500">Execution</dt><dd className="mt-1 text-sm font-semibold text-sky-300">PAPER</dd></div>
+        <div className="px-4 py-3"><dt className="text-xs text-gray-500">Execution</dt><dd className={cn("mt-1 text-sm font-semibold", execColor)}>{execLabel}</dd></div>
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Workers fresh</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{sessions === null ? "Checking…" : `${freshWorkers}/${workers.length}`}</dd></div>
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Market providers</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{providerHealthError ? "Unavailable" : providerHealth ? `${healthyProviders}/${providerHealth.providers.length} reachable` : "Checking…"}</dd></div>
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Signals evaluated, 24h</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{decisionHealth ? Number(evaluated ?? 0).toLocaleString() : "Checking…"}</dd></div>
@@ -1492,6 +1497,7 @@ export function PaperTrading() {
           providerHealth={providerHealth}
           providerHealthError={providerHealthError}
           decisionHealth={decisionHealth}
+          binanceTestnetStatus={binanceTestnetStatus}
           refreshAgeMs={lastSuccessfulRefreshMs === null ? null : nowMs - lastSuccessfulRefreshMs}
           nowMs={nowMs}
         />
@@ -1628,6 +1634,7 @@ export function PaperTrading() {
         providerHealth={providerHealth}
         providerHealthError={providerHealthError}
         decisionHealth={decisionHealth}
+        binanceTestnetStatus={binanceTestnetStatus}
         refreshAgeMs={lastSuccessfulRefreshMs === null ? null : nowMs - lastSuccessfulRefreshMs}
         nowMs={nowMs}
       />
@@ -1768,7 +1775,7 @@ export function PaperTrading() {
             {s.classification === "archived" && (
               <span className="rounded bg-amber-900/40 px-2 py-0.5 text-xs text-amber-400 border border-amber-800">Archived</span>
             )}
-            <span className="text-gray-500">Execution: PAPER</span>
+            <span className="text-gray-500">Execution: {binanceTestnetStatus?.ok && binanceTestnetStatus?.configured ? "BINANCE TESTNET" : "PAPER"}</span>
             {account && <span className="text-gray-400">Strategy: {account.strategy_id}</span>}
             {account && <span className="text-gray-400">Timeframe: {account.timeframe}</span>}
             {account && <span className="text-gray-400">Worker: {account.worker_id}</span>}

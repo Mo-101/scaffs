@@ -269,9 +269,11 @@ class BinanceTestnetExecutor:
                 intent_id=pre_trade_intent.intent_id,
             )
             order = response.get("order") or {}
+            exchange_status = (order.get("status") or "NEW").upper()
+            result_status = "FILLED" if exchange_status == "FILLED" else "SUBMITTED"
             result = ExecutionResult(
                 intent_id=pre_trade_intent.intent_id,
-                status="SUBMITTED",
+                status=result_status,
                 exchange="binance",
                 environment="testnet",
                 exchange_order_id=str(order.get("orderId")) if order.get("orderId") else None,

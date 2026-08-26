@@ -18,8 +18,10 @@ const PROXY_PATHS = [
 ];
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), "");
-  const apiTarget = env.VITE_API_URL || "http://127.0.0.1:3000";
+  // Load the root .env (API_AUTH_KEY lives there, not in frontend/)
+  const env = loadEnv(mode, path.resolve(__dirname, ".."), "");
+  // api_server.py --dev runs on :8000 and spawns Vite on :5899
+  const apiTarget = env.VITE_API_URL || "http://127.0.0.1:8000";
   // The backend trusts loopback callers without a key, but on the VPS this
   // proxy's outbound connection to the backend can present as the Docker
   // bridge gateway address instead of 127.0.0.1 (observed as the mismatch

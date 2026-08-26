@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "../lib/api";
 import { toast } from "sonner";
 import {
@@ -10,6 +10,9 @@ import {
   Layers,
   Activity,
   SendHorizontal,
+  Play,
+  Pause,
+  Settings,
 } from "lucide-react";
 
 interface QueuedSignal {
@@ -30,10 +33,43 @@ interface QueuedSignal {
   rejection_reason?: string;
 }
 
+const AUTO_NOTIONAL_KEY = "idim_auto_notional_usd";
+const AUTO_EXECUTE_KEY = "idim_auto_execute_enabled";
+const AUTO_THRESHOLD_KEY = "idim_auto_execute_threshold";
+const POLL_INTERVAL_MS = 5_000;
+
 export const SignalPriorityQueuePanel: React.FC = () => {
   const [pendingSignals, setPendingSignals] = useState<QueuedSignal[]>([]);
   const [syncing, setSyncing] = useState<boolean>(false);
   const [dispatchingId, setDispatchingId] = useState<string | null>(null);
+
+  const [autoExecute, setAutoExecute] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(AUTO_EXECUTE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [notionalUsd, setNotionalUsd] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem(AUTO_NOTIONAL_KEY));
+      return saved > 0 ? saved : 100;
+    } catch {
+      return 100;
+    }
+  });
+  const [threshold, setThreshold] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem(AUTO_THRESHOLD_KEY));
+      return saved >= 0 ? saved : 80;
+    } catch {
+      return 80;
+    }
+  });
+  const [showSettings, setShowSettings] = useState<boolean>(false);
+
+  const autoDispatchingRef = useRef<Set<string>>(new Set());
+  const previousIdsRef = useRef<Set<string>>(new Set());
 
   const fetchPending = useCallback(async () => {
     try {
@@ -46,14 +82,62 @@ export const SignalPriorityQueuePanel: React.FC = () => {
 
   useEffect(() => {
     void fetchPending();
-    const interval = setInterval(() => void fetchPending(), 5000);
+    const interval = setInterval(() => void fetchPending(), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [fetchPending]);
+
+  // Auto-dispatch any newly-seen pending signal whose raw score passes the threshold.
+  useEffect(() => {
+    if (!autoExecute || pendingSignals.length === 0) return;
+
+    const currentIds = new Set(pendingSignals.map((s) => s.id));
+    const candidates = pendingSignals.filter(
+      (s) =>
+        !previousIdsRef.current.has(s.id) &&
+        !autoDispatchingRef.current.has(s.id) &&
+        (s.raw_score ?? 0) >= threshold
+    );
+
+    if (candidates.length === 0) {
+      previousIdsRef.current = currentIds;
+      return;
+    }
+
+    (async () => {
+      for (const sig of candidates) {
+        autoDispatchingRef.current.add(sig.id);
+        try {
+          const res = await api.dispatchQueuedSignal({
+            queue_id: sig.id,
+            notional_usd: notionalUsd,
+          });
+          if (res?.ok) {
+            toast.success(`Auto-executed ${sig.symbol} ${sig.side}`, {
+              description: `Binance Testnet Order ID: ${res.order_id}`,
+            });
+          } else {
+            toast.error(`Auto-execute blocked: ${sig.symbol}`, {
+              description: res?.reason || res?.error || "risk or collision gate rejected the signal",
+            });
+          }
+        } catch (err: any) {
+          toast.error(`Auto-execute failed: ${sig.symbol}`, {
+            description: err?.message || String(err),
+          });
+        } finally {
+          autoDispatchingRef.current.delete(sig.id);
+        }
+      }
+      await fetchPending();
+    })();
+
+    previousIdsRef.current = currentIds;
+  }, [autoExecute, notionalUsd, threshold, pendingSignals, fetchPending]);
 
   const handleSyncIdim = async () => {
     setSyncing(true);
     try {
-      const res = await api.syncIdimSignals({ auto_dispatch: false, notional_usd: 25.0 });
+      const res = await api.syncIdimSignals({ notional_usd: notionalUsd });
       if (res?.ok) {
         toast.success("Idim Ikang Feed Synced", {
           description: `Ingested ${res.enqueued_count} new retained-strategy signals into priority queue.`,
@@ -70,7 +154,7 @@ export const SignalPriorityQueuePanel: React.FC = () => {
   const handleDispatch = async (signal: QueuedSignal) => {
     setDispatchingId(signal.id);
     try {
-      const res = await api.dispatchQueuedSignal({ queue_id: signal.id, notional_usd: 25.0 });
+      const res = await api.dispatchQueuedSignal({ queue_id: signal.id, notional_usd: notionalUsd });
       if (res?.ok) {
         toast.success(`Dispatched ${signal.symbol} ${signal.side}`, {
           description: `Binance Testnet Order ID: ${res.order_id} (${res.client_order_id})`,
@@ -84,6 +168,17 @@ export const SignalPriorityQueuePanel: React.FC = () => {
     } finally {
       setDispatchingId(null);
     }
+  };
+
+  const toggleAutoExecute = () => {
+    const next = !autoExecute;
+    setAutoExecute(next);
+    try {
+      localStorage.setItem(AUTO_EXECUTE_KEY, String(next));
+    } catch {}
+    toast.info(next ? "Auto-execute ON" : "Auto-execute OFF", {
+      description: next ? `Signals with raw score ≥ ${threshold} will dispatch at $${notionalUsd} notional.` : "Queue will refresh but remain manual.",
+    });
   };
 
   const canonicalId = (s: QueuedSignal) =>
@@ -125,15 +220,80 @@ export const SignalPriorityQueuePanel: React.FC = () => {
             <Zap className="h-3 w-3" />Glory {gloryCount}
           </span>
         </div>
-        <button
-          onClick={handleSyncIdim}
-          disabled={syncing}
-          className="flex items-center gap-1.5 rounded-lg bg-amber-600/20 px-3 py-1.5 text-xs font-medium text-amber-300 border border-amber-500/30 hover:bg-amber-600/30 transition-all disabled:opacity-50 flex-shrink-0"
-        >
-          <RefreshCw className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`} />
-          {syncing ? "Syncing..." : "Sync Idim Stream"}
-        </button>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleAutoExecute}
+            className={cn(
+              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium border transition-all",
+              autoExecute
+                ? "bg-emerald-600/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-600/30"
+                : "bg-slate-800/50 text-slate-300 border-slate-700 hover:bg-slate-800"
+            )}
+            title={autoExecute ? "Auto-execute is enabled" : "Auto-execute is disabled"}
+          >
+            {autoExecute ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+            {autoExecute ? "Auto ON" : "Auto OFF"}
+          </button>
+
+          <button
+            onClick={() => setShowSettings((s) => !s)}
+            className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-800/50 text-slate-300 border border-slate-700 hover:bg-slate-800 transition-all"
+            title="Auto-execute settings"
+          >
+            <Settings className="h-3.5 w-3.5" />
+          </button>
+
+          <button
+            onClick={handleSyncIdim}
+            disabled={syncing}
+            className="flex items-center gap-1.5 rounded-lg bg-amber-600/20 px-3 py-1.5 text-xs font-medium text-amber-300 border border-amber-500/30 hover:bg-amber-600/30 transition-all disabled:opacity-50 flex-shrink-0"
+          >
+            <RefreshCw className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Syncing..." : "Sync Idim Stream"}
+          </button>
+        </div>
       </div>
+
+      {showSettings && (
+        <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-lg border border-slate-700/50 bg-slate-900/50 p-3 text-xs text-slate-300">
+          <label className="flex flex-col gap-1">
+            <span className="text-slate-400">Notional per auto-execution (USDT)</span>
+            <input
+              type="number"
+              min={5}
+              step={5}
+              value={notionalUsd}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                setNotionalUsd(val);
+                try {
+                  localStorage.setItem(AUTO_NOTIONAL_KEY, String(val));
+                } catch {}
+              }}
+              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200 focus:border-amber-500 focus:outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-slate-400">Auto-execute raw score threshold</span>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={threshold}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                setThreshold(val);
+                try {
+                  localStorage.setItem(AUTO_THRESHOLD_KEY, String(val));
+                } catch {}
+              }}
+              className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200 focus:border-amber-500 focus:outline-none"
+            />
+          </label>
+        </div>
+      )}
 
       {/* Active Priority Queue — scrollable, max 5 rows visible */}
       {pendingSignals.length === 0 ? (
@@ -222,3 +382,7 @@ export const SignalPriorityQueuePanel: React.FC = () => {
     </div>
   );
 };
+
+function cn(...classes: (string | false | undefined)[]) {
+  return classes.filter(Boolean).join(" ");
+}

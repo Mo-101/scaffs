@@ -27,6 +27,7 @@ State is split two ways:
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal
 import csv
 import fcntl
 import functools
@@ -44,7 +45,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal, Optional
+from typing import Any, Final, Literal, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from write_receipt import receipted_write  # agent/write_receipt.py, top-level module
@@ -58,7 +59,9 @@ from accounting.futures_ledger import (
     apply_slippage as ledger_apply_slippage,
     close_position as ledger_close_position,
     dec as ledger_dec,
+    money,
     open_position as ledger_open_position,
+    ZERO,
 )
 
 logger = logging.getLogger(__name__)
@@ -236,6 +239,135 @@ def _mirror_trade_to_store(session_id: str, trade: dict[str, Any]) -> None:
     pass
 
 
+EQUITY_TOLERANCE: Final = Decimal("0.000001")
+
+
+@dataclass(frozen=True)
+class AccountSnapshot:
+    """Canonical paper-trading account snapshot used for DB persistence.
+
+    The DB constraint is:
+        abs(current_equity - (((initial_capital + realized_pnl) + unrealized_pnl) + funding_pnl) - fees)) < 1e-6
+    This snapshot enforces that invariant before any write.
+    """
+
+    session_id: str
+    initial_capital: Decimal
+    cash_balance: Decimal
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    funding_pnl: Decimal
+    fees: Decimal
+    current_equity: Decimal
+
+    @property
+    def residual(self) -> Decimal:
+        return self.current_equity - (
+            self.initial_capital + self.realized_pnl + self.unrealized_pnl + self.funding_pnl - self.fees
+        )
+
+    @property
+    def reconciled(self) -> bool:
+        return abs(self.residual) <= EQUITY_TOLERANCE
+
+
+def _as_money(value: Any) -> Decimal:
+    """Convert a JSON/float value to a Decimal money amount safely."""
+    if isinstance(value, Decimal):
+        return money(value)
+    if isinstance(value, (int, float)):
+        return money(str(value))
+    if isinstance(value, str):
+        return money(value)
+    if value is None:
+        return money(ZERO)
+    raise TypeError(f"Cannot convert {type(value).__name__} to money")
+
+
+def _compute_account_snapshot(
+    session_id: str,
+    mark: dict[str, Any],
+    db_initial_capital: Optional[Decimal] = None,
+    db_realized_pnl: Optional[Decimal] = None,
+    db_funding_pnl: Optional[Decimal] = None,
+    db_fees: Optional[Decimal] = None,
+) -> AccountSnapshot:
+    """Build a reconciled snapshot from a mark and an optional existing DB row.
+
+    For a brand-new session (no DB row) the mark is authoritative.
+    For an existing session the DB row's ``initial_capital`` and cumulative
+    P&L fields are preserved unless the mark carries the same initial capital,
+    in which case the mark is treated as a continuation and its P&L values are
+    applied.
+    """
+    db_initial_capital = _as_money(db_initial_capital) if db_initial_capital is not None else None
+    db_realized_pnl = _as_money(db_realized_pnl) if db_realized_pnl is not None else None
+    db_funding_pnl = _as_money(db_funding_pnl) if db_funding_pnl is not None else None
+    db_fees = _as_money(db_fees) if db_fees is not None else None
+
+    mark_initial = _as_money(mark.get("initial_cash"))
+    mark_unrealized = _as_money(mark.get("unrealized_pnl"))
+    mark_realized = _as_money(mark.get("realized_pnl"))
+    mark_funding = _as_money(mark.get("funding_pnl"))
+    mark_fees = _as_money(mark.get("fees"))
+    mark_cash = _as_money(mark.get("cash_remaining"))
+    mark_equity = _as_money(mark.get("equity"))
+
+    if db_initial_capital is not None and mark_initial != db_initial_capital:
+        # Legacy / mismatched account: keep DB's cumulative fields and
+        # re-derive equity from the existing capital structure and the
+        # current mark's unrealized P&L.  This prevents accidental erasure
+        # of historical realized/fee records (e.g. control_15m fixture).
+        initial_capital = db_initial_capital
+        realized_pnl = db_realized_pnl if db_realized_pnl is not None else mark_realized
+        funding_pnl = db_funding_pnl if db_funding_pnl is not None else mark_funding
+        fees = db_fees if db_fees is not None else mark_fees
+        cash_balance = mark_cash
+        current_equity = money(
+            initial_capital + realized_pnl + mark_unrealized + funding_pnl - fees
+        )
+    else:
+        # Authoritative mark: use the mark's own accounting.
+        initial_capital = db_initial_capital if db_initial_capital is not None else mark_initial
+        realized_pnl = mark_realized
+        funding_pnl = mark_funding
+        fees = mark_fees
+        cash_balance = mark_cash
+        current_equity = money(
+            initial_capital + realized_pnl + mark_unrealized + funding_pnl - fees
+        )
+
+        # The mark's equity should agree with the derived value.  Allow the
+        # DB tolerance because the mark is independently computed from
+        # cash + position values.
+        if abs(current_equity - mark_equity) > EQUITY_TOLERANCE:
+            raise AccountingInvariantError(
+                "mark equity does not reconcile with P&L components",
+                {
+                    "session_id": session_id,
+                    "initial_capital": str(initial_capital),
+                    "realized_pnl": str(realized_pnl),
+                    "unrealized_pnl": str(mark_unrealized),
+                    "funding_pnl": str(funding_pnl),
+                    "fees": str(fees),
+                    "computed_equity": str(current_equity),
+                    "mark_equity": str(mark_equity),
+                    "residual": str(current_equity - mark_equity),
+                },
+            )
+
+    return AccountSnapshot(
+        session_id=session_id,
+        initial_capital=initial_capital,
+        cash_balance=cash_balance,
+        realized_pnl=realized_pnl,
+        unrealized_pnl=mark_unrealized,
+        funding_pnl=funding_pnl,
+        fees=fees,
+        current_equity=current_equity,
+    )
+
+
 def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
     dsn = os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=mostar port=5433")
     try:
@@ -244,46 +376,100 @@ def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
             sys.path.insert(0, venv_site)
         import psycopg
         from uuid import uuid4
+
         with psycopg.connect(dsn) as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT account_id, strategy_id, timeframe, strategy_actually_run FROM paper_trading.trading_accounts WHERE worker_id = %s;",
+                """SELECT account_id, strategy_id, timeframe, strategy_actually_run,
+                          initial_capital, realized_pnl, funding_pnl, fees
+                   FROM paper_trading.trading_accounts WHERE worker_id = %s;""",
                 (session_id,)
             )
             row = cur.fetchone()
+
             if row is None:
-                account_id = str(uuid4())
-                strategy_id = "periodic_equal_weight_rebalance" if ("rebalance" in session_id or "control" in session_id or "candidate" in session_id) else "funding_rate_zscore"
+                # Brand-new account: the mark is the source of truth.
+                strategy_id = (
+                    "periodic_equal_weight_rebalance"
+                    if ("rebalance" in session_id or "control" in session_id or "candidate" in session_id)
+                    else "funding_rate_zscore"
+                )
                 actually_run = strategy_id
                 timeframe = "5m"
+                account_id = str(uuid4())
+
+                snap = _compute_account_snapshot(session_id, mark)
+
                 cur.execute(
-                    """INSERT INTO paper_trading.trading_accounts 
-                       (account_id, strategy_id, worker_id, timeframe, mode, leverage, initial_capital, cash_balance, realized_pnl, funding_pnl, fees, ledger_status, created_at, updated_at, margin_used, unrealized_pnl, current_equity, strategy_actually_run)
-                       VALUES (%s, %s, %s, %s, 'paper', NULL, 10000.0, %s, 0, 0, 0, 'OK', NOW(), NOW(), 0, %s, %s, %s)
+                    """INSERT INTO paper_trading.trading_accounts
+                       (account_id, strategy_id, worker_id, timeframe, mode, leverage,
+                        initial_capital, cash_balance, realized_pnl, funding_pnl, fees,
+                        ledger_status, created_at, updated_at, margin_used, unrealized_pnl,
+                        current_equity, strategy_actually_run)
+                       VALUES (%s, %s, %s, %s, 'paper', NULL, %s, %s, %s, %s, %s,
+                               'OK', NOW(), NOW(), 0, %s, %s, %s)
                        ON CONFLICT (account_id) DO NOTHING;""",
-                    (account_id, strategy_id, session_id, timeframe, mark.get("cash_remaining", 10000.0), mark.get("unrealized_pnl", 0), mark.get("total_equity", 10000.0), actually_run)
+                    (
+                        account_id, strategy_id, session_id, timeframe,
+                        snap.initial_capital,
+                        snap.cash_balance,
+                        snap.realized_pnl,
+                        snap.funding_pnl,
+                        snap.fees,
+                        snap.unrealized_pnl,
+                        snap.current_equity,
+                        actually_run,
+                    ),
                 )
             else:
-                account_id, strategy_id, timeframe, actually_run = row
+                account_id, strategy_id, timeframe, actually_run, db_initial, db_realized, db_funding, db_fees = row
                 account_id = str(account_id)
                 actually_run = actually_run or strategy_id
 
+                snap = _compute_account_snapshot(
+                    session_id,
+                    mark,
+                    db_initial_capital=db_initial,
+                    db_realized_pnl=db_realized,
+                    db_funding_pnl=db_funding,
+                    db_fees=db_fees,
+                )
+
+                cur.execute(
+                    """UPDATE paper_trading.trading_accounts
+                       SET cash_balance=%s, realized_pnl=%s, unrealized_pnl=%s,
+                           funding_pnl=%s, fees=%s, current_equity=%s,
+                           ledger_status='OK', updated_at=%s
+                       WHERE worker_id=%s;""",
+                    (
+                        snap.cash_balance,
+                        snap.realized_pnl,
+                        snap.unrealized_pnl,
+                        snap.funding_pnl,
+                        snap.fees,
+                        snap.current_equity,
+                        datetime.now(timezone.utc),
+                        session_id,
+                    ),
+                )
+
+            if not snap.reconciled:
+                raise AccountingInvariantError(
+                    "account equity does not reconcile",
+                    {
+                        "session_id": session_id,
+                        "initial_capital": str(snap.initial_capital),
+                        "cash_balance": str(snap.cash_balance),
+                        "realized_pnl": str(snap.realized_pnl),
+                        "unrealized_pnl": str(snap.unrealized_pnl),
+                        "funding_pnl": str(snap.funding_pnl),
+                        "fees": str(snap.fees),
+                        "current_equity": str(snap.current_equity),
+                        "residual": str(snap.residual),
+                    },
+                )
+
             now_utc = datetime.now(timezone.utc)
             marked_at = mark.get("timestamp") or now_utc.isoformat()
-            initial_capital = float(mark.get("initial_cash", 10000.0))
-            unrealized_pnl = float(mark.get("unrealized_pnl", 0.0))
-            realized_pnl = float(mark.get("realized_pnl", 0.0))
-            funding_pnl = float(mark.get("funding_pnl", 0.0))
-            fees = float(mark.get("fees", 0.0))
-            current_equity = initial_capital + realized_pnl + unrealized_pnl + funding_pnl - fees
-            cash_remaining = float(mark.get("cash_remaining", initial_capital))
-
-            cur.execute(
-                """UPDATE paper_trading.trading_accounts
-                   SET cash_balance=%s, unrealized_pnl=%s, current_equity=%s,
-                       ledger_status='OK', updated_at=%s
-                   WHERE worker_id=%s;""",
-                (cash_remaining, unrealized_pnl, current_equity, now_utc, session_id)
-            )
 
             cur.execute(
                 """INSERT INTO paper_trading.worker_heartbeats
@@ -291,16 +477,25 @@ def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
                    VALUES (%s, %s, %s, %s, %s, '{}'::jsonb, 'paper')
                    ON CONFLICT (account_id) DO UPDATE SET
                      process_id=EXCLUDED.process_id, last_seen_at=EXCLUDED.last_seen_at;""",
-                (account_id, strategy_id, session_id, os.getpid(), now_utc)
+                (account_id, strategy_id, session_id, os.getpid(), now_utc),
             )
 
             cur.execute(
                 """INSERT INTO paper_trading.equity_history
                    (account_id, strategy_id, worker_id, marked_at, cash_balance, margin_used,
                     realized_pnl, unrealized_pnl, funding_pnl, fees, equity, mode, strategy_actually_run)
-                   VALUES (%s, %s, %s, %s, %s, 0, 0, %s, 0, 0, %s, 'paper', %s)
+                   VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s, %s, %s, 'paper', %s)
                    ON CONFLICT (account_id, marked_at) DO NOTHING;""",
-                (account_id, strategy_id, session_id, marked_at, (current_equity - unrealized_pnl), unrealized_pnl, current_equity, actually_run)
+                (
+                    account_id, strategy_id, session_id, marked_at,
+                    money(snap.current_equity - snap.unrealized_pnl),
+                    snap.realized_pnl,
+                    snap.unrealized_pnl,
+                    snap.funding_pnl,
+                    snap.fees,
+                    snap.current_equity,
+                    actually_run,
+                ),
             )
 
             cur.execute(
@@ -309,8 +504,18 @@ def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
                     market_data_source, market_data_fresh, orders_created, fills_created, trades_closed,
                     realized_pnl, unrealized_pnl, fees, funding_pnl, ending_equity, ledger_reconciled, status,
                     strategy_actually_run, decision_funnel)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, 'binance', true, 0, 0, 0, 0, %s, 0, 0, %s, true, 'COMPLETED', %s, '{}'::jsonb);""",
-                (str(uuid4()), account_id, session_id, strategy_id, timeframe or '5m', now_utc, now_utc, unrealized_pnl, current_equity, actually_run)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, 'binance', true, 0, 0, 0,
+                           %s, %s, %s, %s, %s, true, 'COMPLETED', %s, '{}'::jsonb);""",
+                (
+                    str(uuid4()), account_id, session_id, strategy_id, timeframe or '5m',
+                    now_utc, now_utc,
+                    snap.realized_pnl,
+                    snap.unrealized_pnl,
+                    snap.fees,
+                    snap.funding_pnl,
+                    snap.current_equity,
+                    actually_run,
+                ),
             )
             conn.commit()
     except Exception as exc:
@@ -794,6 +999,9 @@ def _execute_close_intent(
     # succeeded, do we mutate it.
     book["cash_remaining"] = float(result.account.available_cash)
     book["reserved_margin"] = float(result.account.reserved_margin)
+    book["realized_pnl"] = float(book.get("realized_pnl", 0.0)) + float(result.account.realized_pnl)
+    book["fees"] = float(book.get("fees", 0.0)) + float(result.account.fees_paid)
+    book["funding_pnl"] = float(book.get("funding_pnl", 0.0)) + float(result.account.funding_net)
     positions[intent.symbol] = 0.0
     if intent.symbol in pos_meta:
         del pos_meta[intent.symbol]
@@ -1061,12 +1269,17 @@ def start_session(
             margin=per_symbol_margin,
         )
 
+    total_entry_fees = entry_fee * len(symbols)
     book = {
         "positions": positions,
         "cash_remaining": cash_remaining,
         "reserved_margin": reserved_margin,
         "last_rebalance_time": entry_time,
         "position_metadata": pos_meta,
+        "realized_pnl": 0.0,
+        "funding_pnl": 0.0,
+        "fees": total_entry_fees,
+        "initial_cash": initial_cash,
     }
     receipted_write(session_dir / "book.json", json.dumps(book, indent=2))
 
@@ -1167,6 +1380,10 @@ def _build_mark(
         "pnl_pct": (equity - initial_cash) / initial_cash if initial_cash else 0.0,
         "leverage": risk.get("leverage", 5.0),
         "margin_mode": risk.get("margin_mode", "isolated"),
+        "initial_cash": float(initial_cash),
+        "realized_pnl": float(book.get("realized_pnl", 0.0)),
+        "funding_pnl": float(book.get("funding_pnl", 0.0)),
+        "fees": float(book.get("fees", 0.0)),
     }
 
 
@@ -1299,6 +1516,10 @@ def rebalance_if_due(
     buys = [(code, dv) for code, dv in planned if dv > 0]
 
     cash_remaining = float(book["cash_remaining"])
+    realized_pnl = float(book.get("realized_pnl", 0.0))
+    funding_pnl = float(book.get("funding_pnl", 0.0))
+    fees = float(book.get("fees", 0.0))
+    initial_cash = float(book.get("initial_cash", session.get("initial_cash", 0.0)))
 
     # Execute all sells first so their proceeds are available for buys.
     for code, delta_value in sells:
@@ -1321,12 +1542,15 @@ def rebalance_if_due(
             close_qty = min(old_qty, abs(delta_qty))
             old_margin = float(meta.get("margin", 0.0))
             margin_released = old_margin * close_qty / old_qty if old_qty else 0.0
-            realized_pnl = (prices[code] - float(meta["entry_price"])) * close_qty
-            cash_remaining += margin_released + realized_pnl - fee_paid
+            trade_realized = (prices[code] - float(meta["entry_price"])) * close_qty
+            realized_pnl += trade_realized
+            fees += fee_paid
+            cash_remaining += margin_released + trade_realized - fee_paid
             meta["margin"] = max(0.0, old_margin - margin_released)
             meta["quantity"] = max(0.0, old_qty - close_qty)
         else:
             cash_remaining += notional - fee_paid
+        fees += fee_paid
         positions[code] = old_qty + delta_qty
         executed.append(trade)
         _append_jsonl(session_dir / "trades.jsonl", trade)
@@ -1403,6 +1627,7 @@ def rebalance_if_due(
         positions[code] = old_qty + delta_qty
         cash_remaining -= total_cost
         remaining_budget -= total_cost
+        fees += fee_paid
         executed.append(trade)
         _append_jsonl(session_dir / "trades.jsonl", trade)
         _mirror_trade_to_store(session_dir.name, trade)
@@ -1412,7 +1637,17 @@ def rebalance_if_due(
 
     # Preserve position_metadata from risk exits and leveraged rebalance updates.
     reserved_margin = sum(float(m.get("margin", 0.0)) for m in pos_meta.values())
-    book = {"positions": positions, "cash_remaining": cash_remaining, "reserved_margin": reserved_margin, "last_rebalance_time": timestamp, "position_metadata": pos_meta}
+    book = {
+        "positions": positions,
+        "cash_remaining": cash_remaining,
+        "reserved_margin": reserved_margin,
+        "last_rebalance_time": timestamp,
+        "position_metadata": pos_meta,
+        "realized_pnl": realized_pnl,
+        "funding_pnl": funding_pnl,
+        "fees": fees,
+        "initial_cash": initial_cash,
+    }
     receipted_write(session_dir / "book.json", json.dumps(book, indent=2))
 
     mark = _build_mark(session, book, prices, now=timestamp)

@@ -203,12 +203,16 @@ class BinanceTestnetExecutor:
                 return self._submit_real(intent, pre_trade_intent, step4.decision, session_dir)
             return step4.dry_run_result
 
+        actual_notional = float(pre_trade_intent.quantity) * float(pre_trade_intent.market_snapshot.mark_price)
         result = ExecutionResult(
             intent_id=intent.intent_id,
             status="REJECTED",
             exchange="binance",
             environment="testnet",
             error="; ".join(step4.decision.reasons),
+            target_notional=float(intent.notional) if intent.notional is not None else None,
+            actual_notional=actual_notional,
+            leverage=float(pre_trade_intent.requested_leverage),
         )
         _persist_result(session_dir, result)
         return result
@@ -249,6 +253,9 @@ class BinanceTestnetExecutor:
                             **{k: v for k, v in record.items() if k in ExecutionResult.__dataclass_fields__}
                         )
 
+        target_notional = float(intent.notional) if intent.notional is not None else None
+        actual_notional = float(pre_trade_intent.quantity) * float(pre_trade_intent.market_snapshot.mark_price)
+        confirmed_leverage = float(pre_trade_intent.requested_leverage)
         try:
             price = intent.limit_price if pre_trade_intent.order_type == "LIMIT" else None
             response = self.client.place_order(
@@ -270,6 +277,9 @@ class BinanceTestnetExecutor:
                 exchange_order_id=str(order.get("orderId")) if order.get("orderId") else None,
                 submitted_at=_now_iso(),
                 raw_status=response,
+                target_notional=target_notional,
+                actual_notional=actual_notional,
+                leverage=confirmed_leverage,
             )
         except Exception as exc:
             logger.warning("Binance live testnet order submission failed for %s: %s", pre_trade_intent.intent_id, exc)
@@ -279,6 +289,9 @@ class BinanceTestnetExecutor:
                 exchange="binance",
                 environment="testnet",
                 error=str(exc),
+                target_notional=target_notional,
+                actual_notional=actual_notional,
+                leverage=confirmed_leverage,
             )
 
         _persist_result(session_dir, result)
@@ -318,5 +331,68 @@ def submit_binance_testnet_intent(
     session_dir: Optional[Path] = None,
     client: Optional[BinanceFuturesClient] = None,
 ) -> ExecutionResult:
-    """Convenience entry point used by strategy code."""
-    return BinanceTestnetExecutor(client=client).submit(intent, session_dir=session_dir)
+    """Native strategy gate: turn a TradeIntent into a ranked signal and dispatch."""
+    import json
+
+    trading_env = (os.getenv("TRADING_ENV") or "").strip().lower()
+    if trading_env != "binance_testnet":
+        return BinanceTestnetExecutor(client=client).submit(intent, session_dir=session_dir)
+
+    from src.trading.signal_queue import SignalQueueManager
+
+    # Load session risk config if available; otherwise fall back to intent snapshot.
+    requested_leverage: int = 1
+    regime = "NATIVE"
+    if session_dir is not None:
+        session_path = Path(session_dir) / "session.json"
+        if session_path.exists():
+            try:
+                session = json.loads(session_path.read_text(encoding="utf-8"))
+                risk_config = session.get("risk_config", {})
+                requested_leverage = int(float(risk_config.get("leverage", 1.0)))
+                regime = str(session.get("regime", "NATIVE")).upper()
+            except Exception:
+                pass
+    if requested_leverage == 1:
+        requested_leverage = int(float(intent.market_snapshot.get("leverage", 1.0)))
+
+    criteria = {
+        "regime": regime,
+        "requested_leverage": requested_leverage,
+        "volatility": float(intent.market_snapshot.get("volatility", 1.0)),
+        "adx14": float(intent.market_snapshot.get("adx14", 30.0)),
+        "reason": intent.reason,
+    }
+
+    mgr = SignalQueueManager()
+    enq = mgr.enqueue_signal(
+        symbol=intent.symbol,
+        side=intent.side,
+        producer="scaffs_native",
+        timeframe="5m",
+        raw_score=70.0,
+        source_signal_id=intent.intent_id,
+        criteria_vector=criteria,
+        ttl_seconds=600,
+    )
+    if not enq.get("ok"):
+        return ExecutionResult(
+            intent_id=intent.intent_id,
+            status="REJECTED",
+            exchange="binance",
+            environment="testnet",
+            error=f"signal queue rejected: {enq.get('reason', 'unknown')}",
+        )
+
+    dispatch = mgr.dispatch_queued_signal(enq["id"], notional_usd=100.0)
+    exec_dict = dispatch.get("execution_result") or {}
+    if dispatch.get("ok"):
+        return ExecutionResult(**{k: v for k, v in exec_dict.items() if k in ExecutionResult.__dataclass_fields__})
+
+    return ExecutionResult(
+        intent_id=intent.intent_id,
+        status="REJECTED",
+        exchange="binance",
+        environment="testnet",
+        error=dispatch.get("reason") or dispatch.get("status", "EXECUTION_FAILED"),
+    )

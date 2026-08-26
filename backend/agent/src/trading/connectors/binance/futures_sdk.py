@@ -381,6 +381,15 @@ class BinanceFuturesClient:
         raw_positions = self._request("GET", "/fapi/v2/positionRisk", params=params, signed=True)
         return [p for p in raw_positions if float(p.get("positionAmt", 0)) != 0.0]
 
+    def get_symbol_leverage(self, symbol: str) -> int:
+        """Return the currently configured leverage for a symbol (1 if unknown)."""
+        params = {"symbol": symbol.upper().replace("-", "").replace("/", "")}
+        risks = self._request("GET", "/fapi/v2/positionRisk", params=params, signed=True)
+        for r in risks:
+            if r.get("symbol", "").upper() == params["symbol"].upper():
+                return int(r.get("leverage", 1))
+        return 1
+
     def get_ticker_price(self, symbol: str) -> float:
         """Fetch current mark/ticker price for a symbol."""
         formatted_symbol = _format_symbol(symbol)

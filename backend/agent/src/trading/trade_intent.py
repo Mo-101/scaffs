@@ -55,6 +55,9 @@ class ExecutionResult:
     filled_qty: Optional[float] = None
     commission: Optional[float] = None
     realized_pnl: Optional[float] = None
+    target_notional: Optional[float] = None
+    actual_notional: Optional[float] = None
+    leverage: Optional[float] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

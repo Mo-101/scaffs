@@ -375,7 +375,7 @@ class SignalQueueManager:
         with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT symbol, side, status, topsis_score, raw_score, target_strategy, created_at, ttl_seconds
+                SELECT symbol, side, status, topsis_score, raw_score, target_strategy, created_at, ttl_seconds, criteria_vector
                 FROM paper_trading.signal_queue
                 WHERE id = %s;
                 """,
@@ -387,7 +387,8 @@ class SignalQueueManager:
             if row[2] != "PENDING":
                 return {"ok": False, "error": f"Signal {queue_id} has already transitioned to status '{row[2]}'"}
 
-        symbol, side, status, topsis_score, raw_score, strategy, created_at, ttl = row
+        symbol, side, status, topsis_score, raw_score, strategy, created_at, ttl, criteria_raw = row
+        criteria = criteria_raw if isinstance(criteria_raw, dict) else json.loads(criteria_raw or "{}")
         clean_sym = symbol.upper()
         clean_side = side.upper()
 
@@ -417,18 +418,40 @@ class SignalQueueManager:
         os.environ.setdefault("TRADE_COOLDOWN_SECONDS", "0")
         os.environ.setdefault("MAX_MARKET_DATA_AGE_SECONDS", "1000")
 
-        # 4. Calculate quantity (rounded up to symbol precision)
+        # 4. Compute price and requested leverage
         client = get_binance_futures_client()
         ticker_px = client.get_ticker_price(clean_sym)
         if ticker_px <= 0:
             ticker_px = 1.0
 
-        leverage = self._target_leverage(strategy)
-        try:
-            client.set_leverage(clean_sym, leverage)
-        except Exception as exc:
-            logger.warning("Could not set %s leverage to %sx: %s", clean_sym, leverage, exc)
+        requested_leverage = int(criteria.get("requested_leverage") or self._target_leverage(strategy))
 
+        # 5. Enforce confirmed leverage invariant
+        try:
+            client.set_leverage(clean_sym, requested_leverage)
+        except Exception:
+            pass  # will verify below and reject if still mismatched
+
+        confirmed_leverage = client.get_symbol_leverage(clean_sym)
+        if confirmed_leverage != requested_leverage:
+            mismatch = (
+                f"LEVERAGE_MISMATCH: requested {requested_leverage}x but Binance is at {confirmed_leverage}x"
+            )
+            with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE paper_trading.signal_queue
+                    SET status = 'EXECUTION_FAILED',
+                        rejection_reason = %s,
+                        completed_at = NOW()
+                    WHERE id = %s;
+                    """,
+                    (mismatch, queue_id),
+                )
+                conn.commit()
+            return {"ok": False, "status": "EXECUTION_FAILED", "queue_id": queue_id, "reason": mismatch}
+
+        # 6. Calculate quantity (rounded up to symbol precision) and verify actual notional
         if quantity is None:
             precision = client.get_quantity_precision(clean_sym)
             step = 10 ** -precision
@@ -436,7 +459,27 @@ class SignalQueueManager:
             quantity = math.ceil(raw_qty / step) * step
             quantity = round(quantity, precision)
 
-        # 5. Build exchange-agnostic TradeIntent
+        actual_notional = quantity * ticker_px
+        if actual_notional < 0.9 * notional_usd or actual_notional > 1.1 * notional_usd:
+            sizing = (
+                f"NOTIONAL_STEP_TOO_COARSE: target ${notional_usd} maps to ${actual_notional:.2f} "
+                f"(quantity {quantity} @ {ticker_px:.2f})"
+            )
+            with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE paper_trading.signal_queue
+                    SET status = 'EXECUTION_FAILED',
+                        rejection_reason = %s,
+                        completed_at = NOW()
+                    WHERE id = %s;
+                    """,
+                    (sizing, queue_id),
+                )
+                conn.commit()
+            return {"ok": False, "status": "EXECUTION_FAILED", "queue_id": queue_id, "reason": sizing}
+
+        # 7. Build exchange-agnostic TradeIntent
         order_type = self._order_type_for_strategy(strategy)
         limit_price: Optional[float] = None
         if order_type == "LIMIT":
@@ -456,6 +499,7 @@ class SignalQueueManager:
             symbol=clean_sym,
             side=clean_side,
             quantity=quantity,
+            notional=notional_usd,
             order_type=order_type,
             limit_price=limit_price,
             reduce_only=False,
@@ -463,7 +507,7 @@ class SignalQueueManager:
             signal_timestamp=timestamp,
             market_snapshot={
                 "price": ticker_px,
-                "leverage": leverage,
+                "leverage": confirmed_leverage,
                 "timestamp": timestamp,
                 "source": "binance_testnet",
             },

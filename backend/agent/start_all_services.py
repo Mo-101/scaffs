@@ -133,10 +133,12 @@ def run_session_worker(session_name: str, is_funding: bool = False, poll_interva
 def main() -> None:
     initialize_all_sessions()
 
-    # Active sessions: 1 rebalancer, 1 funding rate z-score
+    # Active sessions: equal-weight, funding, and grid 5x/10x
     sessions_to_run = [
         ("rebalance_equal_weight_v1", False, 30),
         ("morning_glory_futures", True, 20),
+        ("grid_futures_5x_v3", False, 30),
+        ("grid_futures_10x_v3", False, 30),
     ]
 
     threads: list[threading.Thread] = []

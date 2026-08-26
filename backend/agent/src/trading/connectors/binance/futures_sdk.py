@@ -32,13 +32,7 @@ except (ImportError, ValueError):
             classify_binance_mutation_error,
         )
     except (ImportError, ValueError):
-        try:
-            from trading.connectors.binance.classification import (
-                BinanceOutcomeClass,
-                classify_binance_mutation_error,
-            )
-        except (ImportError, ValueError):
-            from classification import BinanceOutcomeClass, classify_binance_mutation_error
+        from classification import BinanceOutcomeClass, classify_binance_mutation_error
 
 logger = logging.getLogger(__name__)
 

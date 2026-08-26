@@ -9,11 +9,11 @@ sys.path.insert(0, str(backend_dir))
 sys.path.insert(0, str(agent_dir))
 sys.path.insert(0, str(agent_dir / "src"))
 
-from trading.connectors.binance.classification import (
+from src.trading.connectors.binance.classification import (
     BinanceOutcomeClass,
     classify_binance_mutation_error,
 )
-from trading.connectors.binance.futures_sdk import (
+from src.trading.connectors.binance.futures_sdk import (
     BinanceAPIError,
     BinanceAmbiguousMutationError,
     BinanceFuturesClient,

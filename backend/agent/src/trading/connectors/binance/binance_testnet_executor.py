@@ -11,8 +11,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
 
@@ -54,6 +57,50 @@ def _persist_result(session_dir: Optional[Path], result: ExecutionResult) -> Non
     _persist_jsonl(session_dir / "executions.jsonl", record)
 
 
+def _to_pre_trade_intent(intent: TradeIntent):
+    """Convert the strategy-level TradeIntent to the Step 4 risk contract shape."""
+    from src.trading.risk.pre_trade import MarketSnapshot, TradeIntent as PreTradeIntent
+
+    symbol = _format_binance_symbol(intent.symbol)
+    market = intent.market_snapshot or {}
+    price = Decimal(str(market.get("price", "0")))
+    if price <= 0:
+        price = Decimal(str(market.get("mark_price", "0")))
+
+    ts = market.get("timestamp") or intent.signal_timestamp or _now_iso()
+    try:
+        epoch = int(datetime.fromisoformat(ts).timestamp())
+    except (ValueError, TypeError):
+        epoch = int(time.time())
+
+    if intent.quantity is not None and intent.quantity > 0:
+        quantity = Decimal(str(intent.quantity))
+    elif intent.notional is not None and intent.notional > 0 and price > 0:
+        quantity = Decimal(str(intent.notional)) / price
+    else:
+        quantity = Decimal("0")
+
+    requested_leverage = Decimal(str(market.get("leverage", "1")))
+    if requested_leverage <= 0:
+        requested_leverage = Decimal("1")
+
+    return PreTradeIntent(
+        intent_id=intent.intent_id,
+        symbol=symbol,
+        side=intent.side,
+        order_type=intent.order_type,
+        quantity=quantity,
+        reduce_only=intent.reduce_only,
+        requested_leverage=requested_leverage,
+        market_snapshot=MarketSnapshot(
+            symbol=symbol,
+            mark_price=price,
+            timestamp_epoch=epoch,
+            status="OK",
+        ),
+    )
+
+
 class BinanceTestnetExecutor:
     """Adapter that turns a ``TradeIntent`` into a Binance Testnet order.
 
@@ -65,6 +112,7 @@ class BinanceTestnetExecutor:
 
     def __init__(self, client: Optional[BinanceFuturesClient] = None) -> None:
         self.client = client or get_binance_futures_client()
+        self._session_dir: Optional[Path] = None
         raw = os.getenv(EXECUTION_ENABLED_ENV, "false").strip().lower()
         self.execution_enabled = raw in {"1", "true", "yes", "on"}
 
@@ -89,48 +137,59 @@ class BinanceTestnetExecutor:
             raise ValueError(f"Invalid notional: {intent.notional}")
 
     def submit(self, intent: TradeIntent, session_dir: Optional[Path] = None) -> ExecutionResult:
-        """Validate, persist, and optionally submit the intent to Binance Testnet."""
+        """Step 4 path: validate, evaluate risk, persist decision, dry-run only."""
+        self._session_dir = session_dir
         self._validate(intent)
 
-        # Build the canonical audit record before any submission.
-        audit = {
-            "intent_id": intent.intent_id,
-            "strategy_id": intent.strategy_id,
-            "symbol": intent.symbol,
-            "side": intent.side,
-            "quantity": intent.quantity,
-            "notional": intent.notional,
-            "order_type": intent.order_type,
-            "limit_price": intent.limit_price,
-            "reduce_only": intent.reduce_only,
-            "reason": intent.reason,
-            "signal_timestamp": intent.signal_timestamp,
-            "market_snapshot": intent.market_snapshot,
-            "trading_env": intent.trading_env,
-            "execution_enabled": self.execution_enabled,
-            "submitted_at": _now_iso(),
-        }
-        _persist_intent(session_dir, audit)
+        from src.trading.risk import (
+            BinanceTestnetStateProvider,
+            RiskDecisionLedger,
+            load_risk_config,
+            process_trade_intent_step4,
+        )
+        from src.trading.risk.session_intent_registry import SessionIntentRegistry
+        from src.trading.risk.session_trade_ledger import SessionTradeLedger
 
-        if not self.execution_enabled:
-            logger.info(
-                "DRY_RUN intent %s: %s %s qty=%s notional=%s",
-                intent.intent_id,
-                intent.side,
-                intent.symbol,
-                intent.quantity,
-                intent.notional,
-            )
-            result = ExecutionResult(
-                intent_id=intent.intent_id,
-                status="DRY_RUN",
-                exchange="binance",
-                environment="testnet",
-            )
-            _persist_result(session_dir, result)
-            return result
+        import time
 
-        return self._submit(intent, session_dir)
+        now_epoch = int(time.time())
+        pre_trade_intent = _to_pre_trade_intent(intent)
+        state = BinanceTestnetStateProvider(client=self.client)
+        risk_ledger = RiskDecisionLedger(
+            session_dir / "risk_decisions.jsonl" if session_dir else Path("/tmp") / "risk_decisions.jsonl"
+        )
+        trade_ledger = SessionTradeLedger(
+            session_dir / "trades.jsonl" if session_dir else Path("/tmp") / "trades.jsonl"
+        )
+        intent_registry = SessionIntentRegistry(
+            session_dir / "intents.jsonl" if session_dir else Path("/tmp") / "intents.jsonl"
+        )
+        risk_config = load_risk_config()
+
+        step4 = process_trade_intent_step4(
+            intent=pre_trade_intent,
+            config=risk_config,
+            exchange=state,
+            intent_registry=intent_registry,
+            trade_ledger=trade_ledger,
+            risk_ledger=risk_ledger,
+            dry_run_executor=self,
+            now_epoch=now_epoch,
+            execution_enabled=self.execution_enabled,
+        )
+
+        if step4.status == "APPROVED_DRY_RUN" and step4.dry_run_result is not None:
+            return step4.dry_run_result
+
+        result = ExecutionResult(
+            intent_id=intent.intent_id,
+            status="REJECTED",
+            exchange="binance",
+            environment="testnet",
+            error="; ".join(step4.decision.reasons),
+        )
+        _persist_result(session_dir, result)
+        return result
 
     def _submit(self, intent: TradeIntent, session_dir: Optional[Path] = None) -> ExecutionResult:
         """Real Binance Testnet submission.  The SDK asserts is_testnet."""
@@ -168,6 +227,29 @@ class BinanceTestnetExecutor:
             )
 
         _persist_result(session_dir, result)
+        return result
+
+    def submit_dry_run(self, intent: Any, decision: Any, session_dir: Optional[Path] = None) -> ExecutionResult:
+        """Step 4 dry-run terminal: record receipt, never call the exchange."""
+        intent_record = getattr(intent, "to_dict", lambda: asdict(intent))()
+        decision_record = getattr(decision, "to_dict", lambda: asdict(decision))()
+        record = {
+            "intent_id": getattr(intent, "intent_id", None),
+            "intent": intent_record,
+            "decision": decision_record,
+            "submitted_at": _now_iso(),
+            "status": "DRY_RUN",
+        }
+        persist_dir = session_dir or self._session_dir
+        if persist_dir is not None:
+            _persist_jsonl(persist_dir / "intents.jsonl", record)
+        result = ExecutionResult(
+            intent_id=getattr(intent, "intent_id", ""),
+            status="DRY_RUN",
+            exchange="binance",
+            environment="testnet",
+        )
+        _persist_result(persist_dir, result)
         return result
 
 

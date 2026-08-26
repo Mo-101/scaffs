@@ -41,6 +41,21 @@ DEFAULT_FUTURES_LIVE_HOST = "https://fapi.binance.com"
 ALLOWED_TESTNET_HOSTS = {DEFAULT_FUTURES_TESTNET_HOST, "https://testnet.binancefuture.com"}
 
 
+def _normalize_trading_env(raw: str | None) -> str:
+    """Collapse legacy BINANCE_TRADING_MODE and new TRADING_ENV into a single canonical value."""
+    if not raw:
+        return ""
+    value = raw.strip().lower()
+    # Legacy short names
+    if value in ("testnet", "binance_testnet"):
+        return "binance_testnet"
+    if value == "paper":
+        return "paper"
+    if value in ("production", "binance_production"):
+        return "binance_production"
+    return value
+
+
 @dataclass(frozen=True)
 class BinanceConfig:
     """Mode-specific, fail-closed Binance credential configuration.
@@ -49,6 +64,7 @@ class BinanceConfig:
     production mode can be armed with an explicit enable switch.
     """
 
+    trading_env: str
     mode: TradingMode
     api_key: Optional[str]
     api_secret: Optional[str]
@@ -56,29 +72,33 @@ class BinanceConfig:
 
     @classmethod
     def from_env(cls) -> "BinanceConfig":
-        mode = os.getenv("BINANCE_TRADING_MODE", "testnet").lower().strip()
-        if mode not in ("paper", "testnet", "production"):
-            raise RuntimeError(f"Unsupported BINANCE_TRADING_MODE: {mode}")
+        # Single source of truth.  Legacy BINANCE_TRADING_MODE accepted as a migration shim.
+        env = os.getenv("TRADING_ENV") or os.getenv("BINANCE_TRADING_MODE", "")
+        trading_env = _normalize_trading_env(env)
+        if not trading_env:
+            raise RuntimeError(
+                "TRADING_ENV is not set. Set TRADING_ENV=binance_testnet or TRADING_ENV=paper."
+            )
 
-        if mode == "paper":
-            return cls(mode="paper", api_key=None, api_secret=None, host=None)
+        if trading_env == "paper":
+            return cls(trading_env="paper", mode="paper", api_key=None, api_secret=None, host=None)
 
-        if mode == "testnet":
+        if trading_env == "binance_testnet":
             key = _require_env("BINANCE_TESTNET_API_KEY", "testnet")
             secret = _require_env("BINANCE_TESTNET_API_SECRET", "testnet")
             host = os.getenv("BINANCE_FUTURES_TESTNET_HOST", DEFAULT_FUTURES_TESTNET_HOST).strip()
             if host not in ALLOWED_TESTNET_HOSTS:
                 raise RuntimeError(f"Testnet host '{host}' is not in the allowed list: {ALLOWED_TESTNET_HOSTS}")
-            return cls(mode="testnet", api_key=key, api_secret=secret, host=host)
+            return cls(trading_env="binance_testnet", mode="testnet", api_key=key, api_secret=secret, host=host)
 
-        if mode == "production":
-            if os.getenv("BINANCE_PRODUCTION_ENABLED") != "true":
+        if trading_env == "binance_production":
+            if os.getenv("BINANCE_PRODUCTION_ENABLED") != "true" and os.getenv("SCAFFS_ALLOW_BINANCE_PRODUCTION") != "true":
                 raise RuntimeError("Production Binance trading is not enabled")
             key = _require_env("BINANCE_PROD_API_KEY", "production")
             secret = _require_env("BINANCE_PROD_API_SECRET", "production")
-            return cls(mode="production", api_key=key, api_secret=secret, host=DEFAULT_FUTURES_LIVE_HOST)
+            return cls(trading_env="binance_production", mode="production", api_key=key, api_secret=secret, host=DEFAULT_FUTURES_LIVE_HOST)
 
-        raise RuntimeError(f"Unsupported BINANCE_TRADING_MODE: {mode}")
+        raise RuntimeError(f"Unsupported TRADING_ENV: {trading_env}")
 
 
 def _require_env(name: str, context: str) -> str:
@@ -158,6 +178,7 @@ def generate_deterministic_client_order_id(
 
 @dataclass(frozen=True, slots=True)
 class BinanceFuturesConfig:
+    trading_env: str = "binance_testnet"
     api_key: str = ""
     api_secret: str = ""
     testnet_host: str = DEFAULT_FUTURES_TESTNET_HOST
@@ -178,9 +199,10 @@ class BinanceFuturesConfig:
 
         cfg = BinanceConfig.from_env()
         if cfg.mode == "paper":
-            return cls()
+            return cls(trading_env="paper", is_testnet=False)
         if cfg.mode == "testnet":
             return cls(
+                trading_env="binance_testnet",
                 api_key=cfg.api_key or "",
                 api_secret=cfg.api_secret or "",
                 testnet_host=cfg.host or DEFAULT_FUTURES_TESTNET_HOST,
@@ -188,6 +210,7 @@ class BinanceFuturesConfig:
             )
         # production
         return cls(
+            trading_env="binance_production",
             api_key=cfg.api_key or "",
             api_secret=cfg.api_secret or "",
             testnet_host=DEFAULT_FUTURES_LIVE_HOST,
@@ -199,6 +222,7 @@ class BinanceFuturesConfig:
         if not data:
             return cls.from_env()
         return cls(
+            trading_env=_normalize_trading_env(str(data.get("trading_env") or data.get("TRADING_ENV") or "binance_testnet")) or "binance_testnet",
             api_key=str(data.get("api_key") or data.get("apiKey") or "").strip(),
             api_secret=str(data.get("api_secret") or data.get("apiSecret") or "").strip(),
             testnet_host=str(data.get("testnet_host") or DEFAULT_FUTURES_TESTNET_HOST).strip(),
@@ -216,6 +240,14 @@ class BinanceFuturesClient:
 
     def __init__(self, config: BinanceFuturesConfig | None = None):
         self.config = config or BinanceFuturesConfig.from_env()
+
+    def _require_testnet(self, operation: str = "order submission") -> None:
+        """Fail-closed guard: all order mutations must target Binance Testnet."""
+        if not self.config.is_testnet or self.config.trading_env != "binance_testnet":
+            raise BinanceAPIError(
+                f"{operation} blocked: trading_env={self.config.trading_env!r} is not binance_testnet",
+                outcome_class=BinanceOutcomeClass.TERMINAL_REJECT,
+            )
 
     def _sign(self, params: dict[str, Any]) -> str:
         query = urllib.parse.urlencode(params)
@@ -335,6 +367,7 @@ class BinanceFuturesClient:
 
     def set_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
         """Set initial leverage for a symbol (e.g., 5x or 10x)."""
+        self._require_testnet("set_leverage")
         formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
         return self._request(
             "POST",
@@ -345,6 +378,7 @@ class BinanceFuturesClient:
 
     def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> dict[str, Any]:
         """Change symbol margin mode: 'ISOLATED' or 'CROSSED'."""
+        self._require_testnet("set_margin_type")
         formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
         try:
             return self._request(
@@ -404,6 +438,7 @@ class BinanceFuturesClient:
         Uses deterministic clientOrderId idempotency keys and Phase 5 outcome classification
         to handle transport drops, -1021 timestamp drift, and ambiguous mutations safely.
         """
+        self._require_testnet("place_order")
         formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
         norm_side = "BUY" if side.upper() in ("BUY", "LONG") else "SELL"
         cid = client_order_id or generate_deterministic_client_order_id(
@@ -492,6 +527,7 @@ class BinanceFuturesClient:
         client_order_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Cancel an open order with status reconciliation for -2013, -2011, and -4131."""
+        self._require_testnet("cancel_order")
         formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
         params: dict[str, Any] = {"symbol": formatted_symbol}
         if order_id is not None:
@@ -557,3 +593,17 @@ def get_binance_futures_client(config: Optional[BinanceFuturesConfig] = None) ->
     if _client_instance is None or _client_instance.config != current_cfg:
         _client_instance = BinanceFuturesClient(current_cfg)
     return _client_instance
+
+
+def require_binance_testnet_env() -> None:
+    """Startup assertion: the connector must be in binance_testnet mode.
+
+    Called once by api_server.py so the server fails fast if TRADING_ENV
+    is misconfigured, before any strategy cycle can attempt a real order.
+    """
+    cfg = BinanceFuturesConfig.from_env()
+    if cfg.trading_env != "binance_testnet":
+        raise RuntimeError(
+            f"TRADING_ENV is {cfg.trading_env!r}, not 'binance_testnet'. "
+            "Set TRADING_ENV=binance_testnet to enable testnet trading."
+        )

@@ -3298,6 +3298,12 @@ def serve_main(argv: list[str] | None = None) -> int:
             if k not in os.environ and v:
                 os.environ[k] = v
 
+    # Fail-closed: the Binance connector must be in testnet mode before any
+    # strategy cycle or API route can attempt a real order.
+    from src.trading.connectors.binance.futures_sdk import require_binance_testnet_env
+
+    require_binance_testnet_env()
+
     if not _is_loopback_bind_host(args.host) and not _configured_api_key():
         print(
             f"[warn] Binding to {args.host} without API_AUTH_KEY set. "

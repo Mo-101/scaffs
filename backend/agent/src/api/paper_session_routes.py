@@ -1171,7 +1171,18 @@ def register_paper_session_routes(
             return {
                 "ok": True,
                 "source": "binance_testnet",
-                "snapshots": [snap.__dict__ for snap in snapshots.values()],
+                "snapshots": [
+                    {
+                        "symbol": snap.symbol,
+                        "timestamp": snap.timestamp,
+                        "mark_price": snap.mark_price,
+                        "last_price": snap.last_price,
+                        "bid": snap.bid,
+                        "ask": snap.ask,
+                        "time_ms": snap.time_ms,
+                    }
+                    for snap in snapshots.values()
+                ],
             }
         except Exception as exc:
             logger.warning("Binance Testnet market snapshot failed: %s", exc)

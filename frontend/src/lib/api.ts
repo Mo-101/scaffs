@@ -80,7 +80,7 @@ export const api = {
   syncIdimSignals: async (payload?: any): Promise<any> => post("/paper-sessions/signal-queue/sync-idim", payload),
   getChannelStatus: async (): Promise<any> => get("/channels/status"),
   getDataSourceSettings: async (): Promise<any> => get("/settings/data-sources"),
-  getDbStatus: async (..._args: any[]): Promise<any> => {},
+  getDbStatus: async (): Promise<any> => get("/paper-sessions/db-status").then((r) => r.db),
   getGoal: async (..._args: any[]): Promise<any> => {},
   getLLMSettings: async (): Promise<any> => get("/settings/llm"),
   getLiveStatus: async (..._args: any[]): Promise<any> => {},
@@ -110,7 +110,7 @@ export const api = {
   stopChannels: async (): Promise<any> => post("/channels/stop"),
   stopLiveRunner: async (..._args: any[]): Promise<any> => {},
   switchTestnet: async (payload?: any): Promise<any> => post("/paper-sessions/switch-testnet", payload),
-  syncDb: async (..._args: any[]): Promise<any> => {},
+  syncDb: async (): Promise<any> => post("/paper-sessions/db-sync"),
   triggerMorningGlory: async (..._args: any[]): Promise<any> => {},
   updateDataSourceSettings: async (payload: any): Promise<any> => {
     const res = await fetch("/settings/data-sources", {

@@ -88,11 +88,20 @@ class IdimFeedBridge:
         rejected = []
         dispatched = []
 
-        # Check existing queue records to avoid re-enqueuing identical signal_ids
+        # Check active queue records to avoid re-enqueuing a signal that is still
+        # pending, dispatched or being processed. Expired/rejected/completed
+        # entries may be re-ingested so the feed stays visible on refresh.
         existing_signal_ids = set()
         try:
             with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
-                cur.execute("SELECT source_signal_id FROM paper_trading.signal_queue WHERE source_signal_id IS NOT NULL;")
+                cur.execute(
+                    """
+                    SELECT source_signal_id
+                    FROM paper_trading.signal_queue
+                    WHERE source_signal_id IS NOT NULL
+                      AND status NOT IN ('EXPIRED','REJECTED','COMPLETED','CANCELLED');
+                    """
+                )
                 for r in cur.fetchall():
                     existing_signal_ids.add(r[0])
         except Exception as e:

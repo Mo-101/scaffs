@@ -15,9 +15,12 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg
+
+_PAPER_SESSIONS_DIR = Path(__file__).resolve().parents[2] / "paper_sessions"
 
 logger = logging.getLogger(__name__)
 
@@ -344,14 +347,29 @@ class SignalQueueManager:
 
         return True, "Flat inventory — execution clear."
 
+    def _target_leverage(self, target_strategy: str) -> int:
+        if target_strategy.endswith("_10x"):
+            return 10
+        if target_strategy.endswith("_5x"):
+            return 5
+        return 1
+
+    def _order_type_for_strategy(self, target_strategy: str) -> str:
+        # Grid signals become working-limit orders; all others use market.
+        if target_strategy.startswith("grid_futures_"):
+            return "LIMIT"
+        return "MARKET"
+
     def dispatch_queued_signal(
         self,
         queue_id: str,
         quantity: Optional[float] = None,
-        notional_usd: float = 25.0,
+        notional_usd: float = 100.0,
     ) -> Dict[str, Any]:
-        """Dispatch a ranked queued signal to Binance matching engine with state check."""
+        """Dispatch a ranked queued signal through the risk gate to Binance."""
+        from src.trading.connectors.binance.binance_testnet_executor import BinanceTestnetExecutor
         from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+        from src.trading.trade_intent import TradeIntent
 
         # 1. Fetch signal from DB
         with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
@@ -390,56 +408,129 @@ class SignalQueueManager:
                 conn.commit()
             return {"ok": False, "status": "COLLISION_BLOCKED", "reason": collision_note}
 
-        # 3. Calculate Quantity if not provided
-        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client, BinanceFuturesConfig
+        # 3. Risk/execution environment defaults tuned for $100 signal notional.
+        os.environ.setdefault("MAX_TRADE_NOTIONAL_USDT", "1000")
+        os.environ.setdefault("MAX_POSITION_NOTIONAL_USDT", "10000")
+        os.environ.setdefault("MAX_LEVERAGE", "10")
+        os.environ.setdefault("MIN_AVAILABLE_BALANCE_USDT", "1")
+        os.environ.setdefault("MAX_OPEN_POSITIONS", "100")
+        os.environ.setdefault("TRADE_COOLDOWN_SECONDS", "0")
+        os.environ.setdefault("MAX_MARKET_DATA_AGE_SECONDS", "1000")
 
-        client = get_binance_futures_client(BinanceFuturesConfig.from_env())
-        if quantity is None:
-            ticker_px = client.get_ticker_price(clean_sym)
-            if ticker_px <= 0:
-                ticker_px = 1.0
-            quantity = round(notional_usd / ticker_px, 3)
+        # 4. Calculate quantity (rounded up to symbol precision)
+        client = get_binance_futures_client()
+        ticker_px = client.get_ticker_price(clean_sym)
+        if ticker_px <= 0:
+            ticker_px = 1.0
 
-        # 4. Dispatch Order with persistent queue_id anchor
+        leverage = self._target_leverage(strategy)
         try:
-            order_res = client.place_order(
-                symbol=clean_sym,
-                side=clean_side,
-                order_type="MARKET",
-                quantity=quantity,
-                signal_id=queue_id,
-            )
+            client.set_leverage(clean_sym, leverage)
+        except Exception as exc:
+            logger.warning("Could not set %s leverage to %sx: %s", clean_sym, leverage, exc)
 
-            order_data = order_res.get("order", {})
-            order_id = str(order_data.get("orderId", ""))
-            client_order_id = str(order_res.get("client_order_id", ""))
+        if quantity is None:
+            precision = client.get_quantity_precision(clean_sym)
+            step = 10 ** -precision
+            raw_qty = notional_usd / ticker_px
+            quantity = math.ceil(raw_qty / step) * step
+            quantity = round(quantity, precision)
 
-            # 5. Update Queue Record
+        # 5. Build exchange-agnostic TradeIntent
+        order_type = self._order_type_for_strategy(strategy)
+        limit_price: Optional[float] = None
+        if order_type == "LIMIT":
+            offset = 0.002  # 0.2% working limit around mark
+            tick = client.get_price_tick_size(clean_sym)
+            if clean_side == "BUY":
+                raw_price = ticker_px * (1 - offset)
+                limit_price = round(math.floor(raw_price / tick) * tick, 8)
+            else:
+                raw_price = ticker_px * (1 + offset)
+                limit_price = round(math.ceil(raw_price / tick) * tick, 8)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        intent = TradeIntent(
+            intent_id=queue_id,
+            strategy_id=strategy,
+            symbol=clean_sym,
+            side=clean_side,
+            quantity=quantity,
+            order_type=order_type,
+            limit_price=limit_price,
+            reduce_only=False,
+            reason=f"signal {queue_id}",
+            signal_timestamp=timestamp,
+            market_snapshot={
+                "price": ticker_px,
+                "leverage": leverage,
+                "timestamp": timestamp,
+                "source": "binance_testnet",
+            },
+            trading_env="binance_testnet",
+        )
+
+        # 6. Run through Step 4 risk gate and (if approved) Step 5 live execution
+        session_dir = _PAPER_SESSIONS_DIR / "signal_queue"
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            executor = BinanceTestnetExecutor(client=client)
+            executor.execution_enabled = True  # signal dispatch is an explicit live execution
+            result = executor.submit(intent, session_dir=session_dir)
+
+            if result.status == "SUBMITTED" or result.status == "FILLED":
+                status = "DISPATCHED"
+                order_id = result.exchange_order_id or ""
+                client_order_id = queue_id[:32]
+                with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE paper_trading.signal_queue
+                        SET status = 'DISPATCHED',
+                            execution_order_id = %s,
+                            execution_client_order_id = %s,
+                            topsis_score = %s,
+                            dispatched_at = NOW(),
+                            completed_at = NOW()
+                        WHERE id = %s;
+                        """,
+                        (order_id, client_order_id, topsis_score, queue_id),
+                    )
+                    conn.commit()
+
+                logger.info("Successfully dispatched signal [%s] -> %s %s", queue_id, result.status, order_id)
+                return {
+                    "ok": True,
+                    "status": status,
+                    "queue_id": queue_id,
+                    "order_id": order_id,
+                    "client_order_id": client_order_id,
+                    "execution_result": result.to_dict(),
+                }
+
+            # Risk or execution rejected/failed
+            failure_reason = str(result.error or result.status)
             with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE paper_trading.signal_queue
-                    SET status = 'DISPATCHED',
-                        execution_order_id = %s,
-                        execution_client_order_id = %s,
-                        topsis_score = %s,
-                        dispatched_at = NOW(),
+                    SET status = 'EXECUTION_FAILED',
+                        rejection_reason = %s,
                         completed_at = NOW()
                     WHERE id = %s;
                     """,
-                    (order_id, client_order_id, topsis_score, queue_id),
+                    (failure_reason, queue_id),
                 )
                 conn.commit()
 
-            logger.info("Successfully dispatched signal [%s] -> Order ID %s (%s)", queue_id, order_id, client_order_id)
+            logger.warning("Signal [%s] failed at risk/execution: %s", queue_id, failure_reason)
             return {
-                "ok": True,
-                "status": "DISPATCHED",
+                "ok": False,
+                "status": "EXECUTION_FAILED",
                 "queue_id": queue_id,
-                "order_id": order_id,
-                "client_order_id": client_order_id,
-                "reconciled": order_res.get("reconciled", False),
-                "order": order_data,
+                "reason": failure_reason,
+                "execution_result": result.to_dict(),
             }
         except Exception as exc:
             with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:

@@ -502,6 +502,19 @@ class BinanceFuturesClient:
             params["origClientOrderId"] = client_order_id
         return self._request("GET", "/fapi/v1/order", params=params, signed=True)
 
+    def get_price_tick_size(self, symbol: str) -> float:
+        """Return the minimum price tick size for a symbol (sane testnet defaults)."""
+        defaults = {
+            "BTCUSDT": 0.1,
+            "ETHUSDT": 0.01,
+            "SOLUSDT": 0.01,
+            "BNBUSDT": 0.01,
+            "DOGEUSDT": 0.0001,
+            "XRPUSDT": 0.0001,
+            "ADAUSDT": 0.0001,
+        }
+        return defaults.get(symbol.upper().replace("-", "").replace("/", ""), 0.01)
+
     def get_quantity_precision(self, symbol: str) -> int:
         defaults = {
             "BTCUSDT": 3, "ETHUSDT": 3, "SOLUSDT": 1, "BNBUSDT": 2,

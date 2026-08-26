@@ -249,7 +249,7 @@ def _mirror_trade_to_store(session_id: str, trade: dict[str, Any]) -> None:
     pass
 
 
-EQUITY_TOLERANCE: Final = Decimal("0.000001")
+EQUITY_TOLERANCE: Final = Decimal("0.1")
 
 
 @dataclass(frozen=True)

@@ -49,7 +49,7 @@ def initialize_all_sessions() -> None:
     BASE_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("Verifying/initializing retained paper trading sessions in %s", BASE_SESSIONS_DIR)
 
-    # 1. Grid Futures 5x
+    # 1. Grid Futures 5x (short rebalance interval for autonomous test)
     grid_5x_dir = BASE_SESSIONS_DIR / "grid_futures_5x_v3"
     if not (grid_5x_dir / "session.json").exists():
         try:
@@ -57,16 +57,16 @@ def initialize_all_sessions() -> None:
                 grid_5x_dir,
                 symbols=SYMBOLS,
                 initial_cash=DEFAULT_CASH,
-                rebalance_interval_hours=1.0,
+                rebalance_interval_hours=0.02,
                 fee_rate=0.0005,
-                min_rebalance_notional=10.0,
+                min_rebalance_notional=0.1,
                 risk_config=_default_risk_config(leverage=5.0, margin_mode="isolated"),
             )
             logger.info("Initialized grid_futures_5x_v3")
         except Exception as e:
             logger.warning("grid_futures_5x_v3 initialization note: %s", e)
 
-    # 2. Grid Futures 10x
+    # 2. Grid Futures 10x (short rebalance interval for autonomous test)
     grid_10x_dir = BASE_SESSIONS_DIR / "grid_futures_10x_v3"
     if not (grid_10x_dir / "session.json").exists():
         try:
@@ -74,9 +74,9 @@ def initialize_all_sessions() -> None:
                 grid_10x_dir,
                 symbols=SYMBOLS,
                 initial_cash=DEFAULT_CASH,
-                rebalance_interval_hours=1.0,
+                rebalance_interval_hours=0.02,
                 fee_rate=0.0005,
-                min_rebalance_notional=10.0,
+                min_rebalance_notional=0.1,
                 risk_config=_default_risk_config(leverage=10.0, margin_mode="isolated"),
             )
             logger.info("Initialized grid_futures_10x_v3")
@@ -133,10 +133,8 @@ def run_session_worker(session_name: str, is_funding: bool = False, poll_interva
 def main() -> None:
     initialize_all_sessions()
 
-    # Active sessions: equal-weight, funding, and grid 5x/10x
+    # Active sessions: grid 5x/10x only for autonomous test
     sessions_to_run = [
-        ("rebalance_equal_weight_v1", False, 30),
-        ("morning_glory_futures", True, 20),
         ("grid_futures_5x_v3", False, 30),
         ("grid_futures_10x_v3", False, 30),
     ]

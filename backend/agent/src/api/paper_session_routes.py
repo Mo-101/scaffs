@@ -1188,6 +1188,25 @@ def register_paper_session_routes(
             logger.warning("Binance Testnet market snapshot failed: %s", exc)
             raise HTTPException(status_code=502, detail=f"Binance Testnet market snapshot failed: {exc}") from exc
 
+    @app.post("/paper-sessions/position-reconciler/run", dependencies=auth_dependencies)
+    async def run_position_reconciler(dry_run: bool = Query(True, description="When true, report only; do not place orders.")):
+        """Run the Step 2 position reconciler to check and repair TP/SL protection.
+
+        Dry-run (default) returns the planned repairs.  Pass dry_run=false to
+        actually place missing STOP_MARKET / TAKE_PROFIT_MARKET algo orders.
+        """
+        from src.trading.position.position_reconciler import PositionReconciler
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+
+        client = get_binance_futures_client()
+        reconciler = PositionReconciler(client=client)
+        try:
+            report = await run_in_threadpool(reconciler.run, dry_run=dry_run)
+            return {"ok": True, "dry_run": dry_run, "report": report}
+        except Exception as exc:
+            logger.error("Position reconciler run failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"Position reconciler run failed: {exc}") from exc
+
     @app.post("/paper-sessions/binance-testnet/configure-account", dependencies=auth_dependencies)
     async def configure_binance_testnet_account(payload: dict[str, Any] = Body(...)):
         """Governance endpoint for symbol leverage and margin mode.

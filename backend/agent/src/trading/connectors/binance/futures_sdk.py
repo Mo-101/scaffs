@@ -785,6 +785,27 @@ class BinanceFuturesClient:
             params["symbol"] = symbol.upper().replace("-", "").replace("/", "")
         return self._request("GET", "/fapi/v1/openOrders", params=params, signed=True)
 
+    def get_open_algo_orders(self, symbol: Optional[str] = None) -> list[dict[str, Any]]:
+        """Get all currently open conditional / algo orders.
+
+        Binance endpoint: GET /fapi/v1/openAlgoOrders
+        """
+        params = {}
+        if symbol:
+            params["symbol"] = symbol.upper().replace("-", "").replace("/", "")
+        return self._request("GET", "/fapi/v1/openAlgoOrders", params=params, signed=True)
+
+    def get_all_algo_orders(self, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Get historical conditional / algo orders for a symbol.
+
+        Binance endpoint: GET /fapi/v1/allAlgoOrders
+        """
+        formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
+        params: dict[str, Any] = {"symbol": formatted_symbol}
+        if limit:
+            params["limit"] = max(1, min(int(limit), 50))
+        return self._request("GET", "/fapi/v1/allAlgoOrders", params=params, signed=True)
+
 
 # Convenience singleton helper
 _client_instance: Optional[BinanceFuturesClient] = None

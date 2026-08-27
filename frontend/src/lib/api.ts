@@ -78,6 +78,8 @@ export const api = {
     get(`/paper-sessions/signal-queue/history${limit ? `?limit=${limit}` : ""}`),
   dispatchQueuedSignal: async (payload: any): Promise<any> => post("/paper-sessions/signal-queue/dispatch", payload),
   syncIdimSignals: async (payload?: any): Promise<any> => post("/paper-sessions/signal-queue/sync-idim", payload),
+  runPositionReconciler: async (dryRun?: boolean): Promise<any> =>
+    post(`/paper-sessions/position-reconciler/run?dry_run=${dryRun ?? true}`),
   getChannelStatus: async (): Promise<any> => get("/channels/status"),
   getDataSourceSettings: async (): Promise<any> => get("/settings/data-sources"),
   getDbStatus: async (): Promise<any> => get("/paper-sessions/db-status").then((r) => r.db),

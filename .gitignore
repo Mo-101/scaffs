@@ -59,3 +59,7 @@ Thumbs.db
 
 # Live market-data runtime cache (recreated by API sync)
 backend/agent/paper_sessions/market_data/
+
+# Credential dumps — never commit raw secrets
+MCP.txt
+**/MCP.txt

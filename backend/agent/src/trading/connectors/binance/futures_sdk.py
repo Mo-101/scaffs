@@ -795,6 +795,30 @@ class BinanceFuturesClient:
             params["symbol"] = symbol.upper().replace("-", "").replace("/", "")
         return self._request("GET", "/fapi/v1/openAlgoOrders", params=params, signed=True)
 
+    def get_all_orders(self, symbol: str, start_time_ms: Optional[int] = None, end_time_ms: Optional[int] = None, limit: int = 500) -> list[dict[str, Any]]:
+        """Fetch all historical orders for a symbol within a time window."""
+        formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
+        params: dict[str, Any] = {"symbol": formatted_symbol}
+        if start_time_ms is not None:
+            params["startTime"] = int(start_time_ms)
+        if end_time_ms is not None:
+            params["endTime"] = int(end_time_ms)
+        if limit:
+            params["limit"] = max(1, min(int(limit), 1000))
+        return self._request("GET", "/fapi/v1/allOrders", params=params, signed=True)
+
+    def get_user_trades(self, symbol: str, start_time_ms: Optional[int] = None, end_time_ms: Optional[int] = None, limit: int = 500) -> list[dict[str, Any]]:
+        """Fetch all user trades (fills) for a symbol within a time window."""
+        formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
+        params: dict[str, Any] = {"symbol": formatted_symbol}
+        if start_time_ms is not None:
+            params["startTime"] = int(start_time_ms)
+        if end_time_ms is not None:
+            params["endTime"] = int(end_time_ms)
+        if limit:
+            params["limit"] = max(1, min(int(limit), 1000))
+        return self._request("GET", "/fapi/v1/userTrades", params=params, signed=True)
+
     def get_all_algo_orders(self, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
         """Get historical conditional / algo orders for a symbol.
 

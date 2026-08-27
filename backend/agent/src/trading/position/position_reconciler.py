@@ -21,6 +21,7 @@ from psycopg.types.json import Json
 from src.trading.connectors.binance.futures_sdk import (
     BinanceFuturesClient,
     BinanceFuturesConfig,
+    generate_deterministic_client_order_id,
     get_binance_futures_client,
 )
 from src.trading.position.protection_ledger import ProtectionLedger
@@ -30,6 +31,8 @@ from src.trading.position.protection_state import (
     ProtectionStatus,
 )
 from src.trading.position.range_gate import evaluate_position
+from src.trading.position.position_risk_resolver import PositionRiskResolver, ResolutionAction
+from src.trading.position.position_close import reduce_only_close, PositionCloseError
 
 logger = logging.getLogger(__name__)
 
@@ -252,15 +255,51 @@ class PositionReconciler:
         except Exception as exc:
             logger.warning("Could not persist criteria for %s: %s", queue_id, exc)
 
-    def run(self, dry_run: bool = True) -> dict[str, Any]:
-        """Inspect live positions and repair missing TP/SL protection.
+    def _record_quarantine(
+        self,
+        position: dict[str, Any],
+        resolution: Any,
+    ) -> None:
+        symbol = _norm_symbol(position.get("symbol", ""))
+        side = _position_side(position)
+        binance_qty = abs(float(position.get("positionAmt", 0.0)))
+        scaffs_qty = 0.0
+        confidence = "UNKNOWN"
+        if resolution.provenance:
+            scaffs_qty = resolution.provenance.get("scaffs_qty", 0.0)
+            confidence = resolution.provenance.get("confidence", "UNKNOWN")
+        reason = f"provenance {confidence}"
+        if not resolution.origin_queue_id:
+            reason = "no origin intent"
+        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO paper_trading.quarantine (
+                    symbol, side, binance_quantity, scaffs_quantity, confidence, reason
+                )
+                SELECT %s, %s, %s, %s, %s, %s
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM paper_trading.quarantine
+                    WHERE symbol = %s
+                      AND side = %s
+                      AND resolved_at IS NULL
+                );
+                """,
+                (symbol, side, binance_qty, scaffs_qty, confidence, reason, symbol, side),
+            )
+            conn.commit()
 
-        Returns a report with each position, its protection status, and any
-        repairs that were attempted.
+    def run(self, dry_run: bool = True) -> dict[str, Any]:
+        """Inspect live Binance positions and resolve Step 3 risk.
+
+        Every exchange position is either provably managed by Scaffs, being
+        deterministically exited, or quarantined.
         """
         timestamp = datetime.now(timezone.utc).isoformat()
         positions = self.client.get_positions()
         algos = self.client.get_open_algo_orders()
+        resolver = PositionRiskResolver(client=self.client, dsn=self.dsn)
         results: list[dict[str, Any]] = []
 
         for pos in positions:
@@ -275,102 +314,135 @@ class PositionReconciler:
                 symbol, position_side, algos
             )
 
-            status = ProtectionStatus.PROTECTED
-            if has_sl and not has_tp:
-                status = ProtectionStatus.PARTIALLY_PROTECTED
-            elif not has_sl and has_tp:
-                status = ProtectionStatus.PARTIALLY_PROTECTED
-            elif not has_sl and not has_tp:
-                status = ProtectionStatus.UNPROTECTED
-
-            origin_queue_id: Optional[str] = None
-            origin_criteria: dict[str, Any] = {}
+            resolution = resolver.resolve_full(pos, algos=algos)
+            action = resolution.action
+            origin_queue_id = resolution.origin_queue_id
+            origin_criteria = resolution.origin_criteria
             repairs: list[ProtectionBoundary] = []
             alert_reason: Optional[str] = None
+            note = ""
 
-            if status != ProtectionStatus.PROTECTED:
+            if action == ResolutionAction.HOLD:
+                status = ProtectionStatus.PROTECTED
+                note = "exact provenance, inside corridor"
+            elif action == ResolutionAction.PROTECT:
+                status = (
+                    ProtectionStatus.REPAIR_PENDING
+                    if dry_run
+                    else ProtectionStatus.PARTIALLY_PROTECTED
+                )
+                note = "exact provenance, inside corridor, attaching TP/SL"
+                sl = _as_float(resolution.stop_loss)
+                tp = _as_float(resolution.take_profit)
+                version = _build_version(
+                    origin_queue_id or "no_origin",
+                    sl,
+                    tp,
+                )
+                missing: list[tuple[str, Optional[float]]] = []
+                if not has_sl and sl is not None:
+                    missing.append(("STOP_MARKET", sl))
+                if not has_tp and tp is not None:
+                    missing.append(("TAKE_PROFIT_MARKET", tp))
+
+                for order_type, trigger in missing:
+                    if trigger is None:
+                        continue
+                    boundary = self._repair_boundary(
+                        pos,
+                        position_side,
+                        mark,
+                        order_type,
+                        trigger,
+                        version,
+                        existing_client_ids,
+                        dry_run,
+                    )
+                    repairs.append(boundary)
+
+                if not dry_run and repairs and not any(b.error for b in repairs):
+                    new_has_sl = has_sl or any(
+                        b.order_type == "STOP_MARKET" for b in repairs
+                    )
+                    new_has_tp = has_tp or any(
+                        b.order_type == "TAKE_PROFIT_MARKET" for b in repairs
+                    )
+                    status = (
+                        ProtectionStatus.PROTECTED
+                        if new_has_sl and new_has_tp
+                        else ProtectionStatus.PARTIALLY_PROTECTED
+                    )
+            elif action == ResolutionAction.CLOSE_LONG:
+                note = "stop breached (LONG)"
+                if not dry_run:
+                    quantity = abs(float(pos.get("positionAmt", 0.0)))
+                    exit_side = _exit_order_side(position_side)
+                    client_order_id = generate_deterministic_client_order_id(
+                        symbol,
+                        exit_side,
+                        signal_id=origin_queue_id,
+                        quantity=quantity,
+                        price=mark,
+                    )
+                    try:
+                        close_result = reduce_only_close(
+                            symbol=symbol,
+                            side=position_side,
+                            quantity=quantity,
+                            client_order_id=client_order_id,
+                            client=self.client,
+                            dsn=self.dsn,
+                            mark_price=mark,
+                            entry_price=entry,
+                        )
+                        note = f"close submitted: {close_result.get('status')}"
+                    except Exception as exc:
+                        alert_reason = f"Close failed: {exc}"
+                        logger.warning("Close failed for %s: %s", symbol, exc)
+                status = ProtectionStatus.ALERT
+                alert_reason = alert_reason or f"CLOSE_LONG at mark {mark}"
+            elif action == ResolutionAction.CLOSE_SHORT:
+                note = "stop breached (SHORT)"
+                if not dry_run:
+                    quantity = abs(float(pos.get("positionAmt", 0.0)))
+                    exit_side = _exit_order_side(position_side)
+                    client_order_id = generate_deterministic_client_order_id(
+                        symbol,
+                        exit_side,
+                        signal_id=origin_queue_id,
+                        quantity=quantity,
+                        price=mark,
+                    )
+                    try:
+                        close_result = reduce_only_close(
+                            symbol=symbol,
+                            side=position_side,
+                            quantity=quantity,
+                            client_order_id=client_order_id,
+                            client=self.client,
+                            dsn=self.dsn,
+                            mark_price=mark,
+                            entry_price=entry,
+                        )
+                        note = f"close submitted: {close_result.get('status')}"
+                    except Exception as exc:
+                        alert_reason = f"Close failed: {exc}"
+                        logger.warning("Close failed for %s: %s", symbol, exc)
+                status = ProtectionStatus.ALERT
+                alert_reason = alert_reason or f"CLOSE_SHORT at mark {mark}"
+            elif action == ResolutionAction.QUARANTINE:
+                status = ProtectionStatus.ALERT
+                reason = (
+                    f"provenance {resolution.provenance.get('confidence', 'UNKNOWN')}"
+                )
+                if not origin_queue_id:
+                    reason = "no origin intent"
+                alert_reason = f"QUARANTINE: {reason}"
+                note = "quarantined"
                 try:
-                    with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
-                        origin = _find_origin_signal(cur, symbol, position_side)
-                    if origin is None:
-                        status = ProtectionStatus.ALERT
-                        alert_reason = (
-                            f"No originating DISPATCHED/PROTECTION_FAILED signal "
-                            f"for {symbol} {position_side}"
-                        )
-                    else:
-                        origin_queue_id, origin_criteria = origin
-                        stop_loss = _as_decimal(origin_criteria.get("stop_loss"))
-                        take_profit = _as_decimal(origin_criteria.get("take_profit"))
-                        mark_dec = _as_decimal(mark)
-                        exec_qty = _as_decimal(
-                            (origin_criteria.get("execution") or {}).get("executed_qty")
-                        )
-                        pos_qty = _as_decimal(pos.get("positionAmt"))
-                        if pos_qty is not None and exec_qty is not None and pos_qty != exec_qty:
-                            status = ProtectionStatus.ALERT
-                            alert_reason = (
-                                f"Position size mismatch for {symbol} {position_side}: "
-                                f"Binance {pos_qty} vs originating executed {exec_qty}"
-                            )
-                        elif mark_dec is not None and _inside_range(
-                            position_side, mark_dec, stop_loss, take_profit
-                        ):
-                            version = _build_version(
-                                origin_queue_id,
-                                _as_float(stop_loss),
-                                _as_float(take_profit),
-                            )
-                            missing: list[tuple[str, Optional[float]]] = []
-                            if not has_sl and stop_loss is not None:
-                                missing.append(("STOP_MARKET", _as_float(stop_loss)))
-                            if not has_tp and take_profit is not None:
-                                missing.append(("TAKE_PROFIT_MARKET", _as_float(take_profit)))
-
-                            for order_type, trigger in missing:
-                                if trigger is None:
-                                    continue
-                                boundary = self._repair_boundary(
-                                    pos,
-                                    position_side,
-                                    mark,
-                                    order_type,
-                                    trigger,
-                                    version,
-                                    existing_client_ids,
-                                    dry_run,
-                                )
-                                repairs.append(boundary)
-
-                            if repairs:
-                                any_error = any(b.error for b in repairs)
-                                if any_error:
-                                    status = ProtectionStatus.REPAIR_FAILED
-                                elif dry_run:
-                                    status = ProtectionStatus.REPAIR_PENDING
-                                else:
-                                    new_has_sl = has_sl or any(
-                                        b.order_type == "STOP_MARKET" and not b.error
-                                        for b in repairs
-                                    )
-                                    new_has_tp = has_tp or any(
-                                        b.order_type == "TAKE_PROFIT_MARKET" and not b.error
-                                        for b in repairs
-                                    )
-                                    if new_has_sl and new_has_tp:
-                                        status = ProtectionStatus.PROTECTED
-                                    else:
-                                        status = ProtectionStatus.PARTIALLY_PROTECTED
-                        else:
-                            status = ProtectionStatus.ALERT
-                            alert_reason = (
-                                f"Current mark {mark} outside originating SL/TP range "
-                                f"for {symbol} {position_side}"
-                            )
+                    self._record_quarantine(pos, resolution)
                 except Exception as exc:
-                    status = ProtectionStatus.REPAIR_FAILED
-                    alert_reason = f"Database or repair error: {exc}"
-                    logger.warning("Reconciliation error for %s: %s", symbol, exc)
+                    logger.warning("Could not record quarantine for %s: %s", symbol, exc)
 
             record = PositionProtection(
                 symbol=symbol,
@@ -386,7 +458,7 @@ class PositionReconciler:
                 repairs=repairs,
                 alert_reason=alert_reason,
                 dry_run=dry_run,
-                note="",
+                note=note,
             )
             results.append(record.to_dict())
             self.ledger.record(record.to_dict())
@@ -400,9 +472,11 @@ class PositionReconciler:
                         "dry_run": dry_run,
                         "status": status.value,
                         "alert_reason": alert_reason,
+                        "resolution_action": action.value,
                         "repairs": [r.to_dict() for r in repairs],
                         "has_stop_loss": has_sl,
                         "has_take_profit": has_tp,
+                        "provenance": resolution.provenance,
                     },
                 )
 

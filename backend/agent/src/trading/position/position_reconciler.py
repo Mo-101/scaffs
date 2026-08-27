@@ -56,8 +56,12 @@ def _norm_symbol(symbol: str) -> str:
 
 
 def _client_algo_id(symbol: str, position_side: str, order_type: str, version: str) -> str:
+    """Binance clientAlgoId must be < 36 chars."""
     prefix = "sl" if "STOP" in order_type.upper() else "tp"
-    return f"protect:{_norm_symbol(symbol)}:{position_side}:{prefix}:{version}"
+    sym = _norm_symbol(symbol)[:10]
+    side = position_side[0].upper() if position_side else "X"
+    ver = version[:16] if len(version) > 16 else version
+    return f"{sym}_{side}_{prefix}_{ver}"
 
 
 def _build_version(queue_id: str, sl: Optional[float], tp: Optional[float]) -> str:
@@ -81,6 +85,10 @@ def _as_decimal(value: Any) -> Optional[Decimal]:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def _round_to_tick(value: float, tick: float) -> float:
+    return round(value / tick) * tick
 
 
 def _inside_range(
@@ -162,7 +170,7 @@ class PositionReconciler:
                 continue
             order_side = str(o.get("side", "")).upper()
             order_type = str(
-                o.get("type") or o.get("origType") or o.get("algoType") or ""
+                o.get("orderType") or o.get("type") or o.get("origType") or o.get("algoType") or ""
             ).upper()
             if order_side != exit_side:
                 continue
@@ -186,17 +194,19 @@ class PositionReconciler:
     ) -> ProtectionBoundary:
         symbol = _norm_symbol(position["symbol"])
         client_algo_id = _client_algo_id(symbol, position_side, order_type, version)
+        tick = self.client.get_price_tick_size(symbol)
+        rounded = _round_to_tick(trigger, tick)
         boundary = ProtectionBoundary(
             order_type=order_type,
-            trigger_price=trigger,
+            trigger_price=rounded,
             client_algo_id=client_algo_id,
         )
         if client_algo_id in existing_client_ids:
             boundary.error = f"client_algo_id {client_algo_id} already exists on exchange"
             return boundary
-        if not _valid_boundary(position_side, order_type, trigger, mark):
+        if not _valid_boundary(position_side, order_type, rounded, mark):
             boundary.error = (
-                f"trigger {trigger} would fire immediately at mark {mark} for {position_side}"
+                f"trigger {rounded} would fire immediately at mark {mark} for {position_side}"
             )
             return boundary
         if dry_run:
@@ -207,7 +217,7 @@ class PositionReconciler:
                 symbol=symbol,
                 side=exit_side,
                 order_type=order_type,
-                trigger_price=trigger,
+                trigger_price=rounded,
                 close_position=True,
                 client_algo_id=client_algo_id,
             )
@@ -293,7 +303,17 @@ class PositionReconciler:
                         stop_loss = _as_decimal(origin_criteria.get("stop_loss"))
                         take_profit = _as_decimal(origin_criteria.get("take_profit"))
                         mark_dec = _as_decimal(mark)
-                        if mark_dec is not None and _inside_range(
+                        exec_qty = _as_decimal(
+                            (origin_criteria.get("execution") or {}).get("executed_qty")
+                        )
+                        pos_qty = _as_decimal(pos.get("positionAmt"))
+                        if pos_qty is not None and exec_qty is not None and pos_qty != exec_qty:
+                            status = ProtectionStatus.ALERT
+                            alert_reason = (
+                                f"Position size mismatch for {symbol} {position_side}: "
+                                f"Binance {pos_qty} vs originating executed {exec_qty}"
+                            )
+                        elif mark_dec is not None and _inside_range(
                             position_side, mark_dec, stop_loss, take_profit
                         ):
                             version = _build_version(

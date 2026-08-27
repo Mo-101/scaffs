@@ -1,0 +1,4 @@
+{"timestamp": "2026-08-25T12:18:17.666525+00:00", "symbol": "BTC-USDT", "side": "BUY", "qty": 0.03167024454920413, "price": 78899.0, "notional": 2498.7506246876565, "fee_paid": 1.2493753123438283, "reason": "entry"}
+{"timestamp": "2026-08-25T12:18:17.666525+00:00", "symbol": "ETH-USDT", "side": "BUY", "qty": 1.0117587185085117, "price": 2469.71, "notional": 2498.7506246876565, "fee_paid": 1.2493753123438283, "reason": "entry"}
+{"timestamp": "2026-08-25T12:18:17.666525+00:00", "symbol": "SOL-USDT", "side": "BUY", "qty": 25.468867849226953, "price": 98.11, "notional": 2498.7506246876565, "fee_paid": 1.2493753123438283, "reason": "entry"}
+{"timestamp": "2026-08-25T12:18:17.666525+00:00", "symbol": "BNB-USDT", "side": "BUY", "qty": 3.598949481042282, "price": 694.3, "notional": 2498.7506246876565, "fee_paid": 1.2493753123438283, "reason": "entry"}

@@ -1,0 +1,65 @@
+{
+  "positions": {
+    "BTC-USDT": 0.03167024454920413,
+    "ETH-USDT": 1.0123879303791974,
+    "SOL-USDT": 25.468867849226953,
+    "BNB-USDT": 3.595486737866852
+  },
+  "cash_remaining": 0.8524426707614843,
+  "reserved_margin": 9995.002498750626,
+  "last_rebalance_time": "2026-08-25T12:33:22.397873+00:00",
+  "position_metadata": {
+    "BTC-USDT": {
+      "symbol": "BTC-USDT",
+      "qty": 0.03167024454920413,
+      "entry_price": 78899.0,
+      "entry_time": "2026-08-25T12:18:17.016513+00:00",
+      "direction": 1,
+      "high_water_mark": 78899.0,
+      "low_water_mark": 78899.0,
+      "leverage": 1.0,
+      "margin": 2498.7506246876565,
+      "margin_mode": "isolated",
+      "liquidation_price": 0.0
+    },
+    "ETH-USDT": {
+      "symbol": "ETH-USDT",
+      "qty": 1.0117587185085117,
+      "entry_price": 2469.71,
+      "entry_time": "2026-08-25T12:18:17.016513+00:00",
+      "direction": 1,
+      "high_water_mark": 2469.71,
+      "low_water_mark": 2469.71,
+      "leverage": 1.0,
+      "margin": 2498.7506246876565,
+      "margin_mode": "isolated",
+      "liquidation_price": 0.0
+    },
+    "SOL-USDT": {
+      "symbol": "SOL-USDT",
+      "qty": 25.468867849226953,
+      "entry_price": 98.11,
+      "entry_time": "2026-08-25T12:18:17.016513+00:00",
+      "direction": 1,
+      "high_water_mark": 98.11,
+      "low_water_mark": 98.11,
+      "leverage": 1.0,
+      "margin": 2498.7506246876565,
+      "margin_mode": "isolated",
+      "liquidation_price": 0.0
+    },
+    "BNB-USDT": {
+      "symbol": "BNB-USDT",
+      "qty": 3.598949481042282,
+      "entry_price": 694.3,
+      "entry_time": "2026-08-25T12:18:17.016513+00:00",
+      "direction": 1,
+      "high_water_mark": 694.3,
+      "low_water_mark": 694.3,
+      "leverage": 1.0,
+      "margin": 2498.7506246876565,
+      "margin_mode": "isolated",
+      "liquidation_price": 0.0
+    }
+  }
+}

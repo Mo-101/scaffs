@@ -1,0 +1,38 @@
+{
+  "strategy_type": "periodic_equal_weight_rebalance",
+  "symbols": [
+    "BTC-USDT",
+    "ETH-USDT",
+    "SOL-USDT",
+    "BNB-USDT"
+  ],
+  "initial_cash": 10000.0,
+  "entry_time": "2026-08-25T12:18:18.245796+00:00",
+  "entry_prices": {
+    "BTC-USDT": 78899.1,
+    "ETH-USDT": 2470.19,
+    "SOL-USDT": 98.13,
+    "BNB-USDT": 694.3
+  },
+  "rebalance_interval_hours": 1.0,
+  "fee_rate": 0.0005,
+  "source": "binance",
+  "price_kind": "live_ticker_last",
+  "fees_modeled": true,
+  "slippage_modeled": false,
+  "cash_accounting_note": null,
+  "accounting_schema_version": 3,
+  "accounting_status": "OK",
+  "min_rebalance_notional": 10.0,
+  "risk_config": {
+    "take_profit_pct": null,
+    "stop_loss_pct": null,
+    "trailing_stop_pct": null,
+    "max_hold_hours": null,
+    "leverage": 10.0,
+    "margin_mode": "isolated",
+    "liquidation_buffer_pct": 0.1,
+    "fixed_margin_per_trade": 0.0,
+    "portfolio_leverage": false
+  }
+}

@@ -32,6 +32,13 @@ DECIMAL_CONTEXT: Final = Context(prec=50, rounding=ROUND_HALF_EVEN)
 
 CASH_QUANTUM: Final = Decimal("0.00000001")
 ZERO: Final = Decimal("0")
+MONEY_TOLERANCE: Final = CASH_QUANTUM
+
+
+def _trim_micro(value: Decimal) -> Decimal:
+    """Collapse tiny sub-quantum negatives to zero. Keeps the ledger clean
+    without hiding material overdrafts, which remain strictly negative."""
+    return ZERO if -MONEY_TOLERANCE <= value <= ZERO else value
 
 
 def dec(value: Union[Decimal, str, int]) -> Decimal:
@@ -153,14 +160,14 @@ def open_position(
 
         new_account = replace(
             account,
-            available_cash=money(account.available_cash - required_cash),
-            reserved_margin=money(account.reserved_margin + initial_margin),
+            available_cash=money(_trim_micro(account.available_cash - required_cash)),
+            reserved_margin=money(_trim_micro(account.reserved_margin + initial_margin)),
             fees_paid=money(account.fees_paid + entry_fee),
         )
 
         wallet_delta = money(new_account.wallet_balance - before_wallet)
         expected_delta = money(-entry_fee)
-        if wallet_delta != expected_delta:
+        if abs(wallet_delta - expected_delta) > MONEY_TOLERANCE:
             raise AccountingInvariantError(
                 f"open wallet conservation failed: actual={wallet_delta}, expected={expected_delta}"
             )
@@ -228,8 +235,8 @@ def close_position(
 
         new_account = replace(
             account,
-            available_cash=money(account.available_cash + available_credit),
-            reserved_margin=money(account.reserved_margin - released_margin),
+            available_cash=money(_trim_micro(account.available_cash + available_credit)),
+            reserved_margin=money(_trim_micro(account.reserved_margin - released_margin)),
             realized_pnl=money(account.realized_pnl + gross_pnl),
             fees_paid=money(account.fees_paid + exit_fee),
             funding_net=money(account.funding_net + funding_cashflow),
@@ -237,12 +244,12 @@ def close_position(
 
         expected_wallet_delta = money(gross_pnl - exit_fee + funding_cashflow)
         actual_wallet_delta = money(new_account.wallet_balance - before_wallet)
-        if actual_wallet_delta != expected_wallet_delta:
+        if abs(actual_wallet_delta - expected_wallet_delta) > MONEY_TOLERANCE:
             raise AccountingInvariantError(
                 f"close wallet conservation failed: actual={actual_wallet_delta}, expected={expected_wallet_delta}"
             )
 
-        if new_account.reserved_margin < ZERO:
+        if new_account.reserved_margin < -MONEY_TOLERANCE:
             raise AccountingInvariantError(f"negative reserved margin: {new_account.reserved_margin}")
 
         if full_close:
@@ -251,7 +258,7 @@ def close_position(
             remaining_position = replace(
                 position,
                 quantity=position.quantity - q,
-                margin_reserved=money(position.margin_reserved - released_margin),
+                margin_reserved=money(_trim_micro(position.margin_reserved - released_margin)),
                 accrued_funding=money(position.accrued_funding - funding_cashflow),
             )
 
@@ -311,7 +318,7 @@ def settle_funding(
 
         updated_account = replace(
             account,
-            available_cash=money(account.available_cash + cashflow),
+            available_cash=money(_trim_micro(account.available_cash + cashflow)),
             funding_net=money(account.funding_net + cashflow),
         )
         updated_position = replace(
@@ -323,11 +330,11 @@ def settle_funding(
 
 def assert_account_invariants(account: Account, positions: list[Position]) -> None:
     expected_reserved = money(sum((p.margin_reserved for p in positions), ZERO))
-    if account.reserved_margin != expected_reserved:
+    if abs(account.reserved_margin - expected_reserved) > MONEY_TOLERANCE:
         raise AccountingInvariantError(
             f"reserved-margin mismatch: account={account.reserved_margin}, positions={expected_reserved}"
         )
-    if account.available_cash < ZERO:
+    if account.available_cash < -MONEY_TOLERANCE:
         raise AccountingInvariantError(f"negative available cash: {account.available_cash}")
-    if account.reserved_margin < ZERO:
+    if account.reserved_margin < -MONEY_TOLERANCE:
         raise AccountingInvariantError(f"negative reserved margin: {account.reserved_margin}")

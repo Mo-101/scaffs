@@ -798,10 +798,10 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 # ── Risk management defaults ────────────────────────────────────────────────
 
 DEFAULT_RISK_CONFIG: dict[str, Any] = {
-    "take_profit_pct": None,        # e.g. 0.05 = close at +5% from entry
-    "stop_loss_pct": None,          # e.g. 0.03 = close at -3% from entry
-    "trailing_stop_pct": None,      # e.g. 0.02 = trail 2% from high-water mark
-    "max_hold_hours": None,         # e.g. 24 = force-close after 24h
+    "take_profit_pct": 0.05,        # close at +5% from entry
+    "stop_loss_pct": 0.03,          # close at -3% from entry
+    "trailing_stop_pct": 0.02,      # trail 2% from high-water mark
+    "max_hold_hours": 24.0,         # force-close after 24h
     "leverage": 5.0,                # 5x or 10x for futures margin mode
     "margin_mode": "isolated",      # "cross" or "isolated" (default: isolated)
     "liquidation_buffer_pct": 0.10, # safety margin for liquidation calc
@@ -1462,7 +1462,16 @@ def mark_once(
         result = fetch_last_prices_with_source(session["symbols"])
         prices = result.prices
         market_data_source = market_data_source or result.source
-    mark = _build_mark(session, book, prices, now=now, market_data_source=market_data_source)
+    tick_now = now if now is not None else _now_iso()
+
+    # Risk exits (TP/SL/trailing/max-hold) are checked on every mark, even when
+    # a full rebalance is not due, so the session never sits on a breached stop.
+    risk_exit_intents = _check_risk_exits(session, book, prices, tick_now, session_dir)
+    risk_exits = _execute_risk_exit_intents(session, book, session_dir, risk_exit_intents, tick_now)
+    if risk_exits:
+        receipted_write(session_dir / "book.json", json.dumps(book, indent=2))
+
+    mark = _build_mark(session, book, prices, now=tick_now, market_data_source=market_data_source)
     _append_jsonl(session_dir / "marks.jsonl", mark)
     _mirror_mark_to_store(session_dir.name, mark)
     return mark

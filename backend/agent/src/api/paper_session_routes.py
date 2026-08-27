@@ -1255,6 +1255,78 @@ def register_paper_session_routes(
                 status_code=500, detail=f"Failed to read funding rate: {exc}"
             ) from exc
 
+    @app.post("/paper-sessions/market-data/sync/{provider}", dependencies=auth_dependencies)
+    async def sync_market_data(provider: str):
+        """Sync live market data from a single supported provider (bybit, okx, gateio, cmc, alphavantage)."""
+        import importlib
+
+        from src.market_data import MarketDataStore
+
+        module_path = f"src.trading.connectors.{provider.lower()}.market_data_sync"
+        try:
+            mod = importlib.import_module(module_path)
+            sync_fn = getattr(mod, "sync")
+        except (ModuleNotFoundError, AttributeError) as exc:
+            raise HTTPException(
+                status_code=404, detail=f"Provider {provider} not implemented or has no sync()"
+            ) from exc
+
+        store = MarketDataStore()
+        try:
+            result = await run_in_threadpool(sync_fn, store)
+            return {"ok": True, "provider": provider, "result": result}
+        except Exception as exc:
+            store.set_status(provider, "failed", str(exc))
+            logger.warning("Market data sync for %s failed: %s", provider, exc)
+            raise HTTPException(status_code=502, detail=f"{provider} sync failed: {exc}") from exc
+
+    @app.post("/paper-sessions/market-data/sync-all", dependencies=auth_dependencies)
+    async def sync_all_market_data():
+        """Sync all configured providers in sequence."""
+        import importlib
+
+        from src.market_data import MarketDataStore
+
+        providers = ["bybit", "okx", "gateio", "cmc", "alphavantage"]
+        store = MarketDataStore()
+        results: list[dict[str, Any]] = []
+        for provider in providers:
+            module_path = f"src.trading.connectors.{provider}.market_data_sync"
+            try:
+                mod = importlib.import_module(module_path)
+                sync_fn = getattr(mod, "sync")
+                result = await run_in_threadpool(sync_fn, store)
+                results.append({"provider": provider, "ok": True, "result": result})
+            except Exception as exc:
+                logger.warning("Market data sync for %s failed: %s", provider, exc)
+                store.set_status(provider, "failed", str(exc))
+                results.append({"provider": provider, "ok": False, "error": str(exc)})
+        return {"ok": True, "results": results}
+
+    @app.get("/paper-sessions/market-data/{provider}", dependencies=auth_dependencies)
+    async def get_market_data(
+        provider: str,
+        kind: str = Query("tickers", description="Snapshot kind, e.g. tickers, funding, metadata"),
+        symbol: Optional[str] = Query(None),
+    ):
+        """Read a cached market-data snapshot from the unified DB store."""
+        from src.market_data import MarketDataStore
+
+        store = MarketDataStore()
+        data = await run_in_threadpool(store.get, provider, kind, symbol)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"No {kind} data for {provider}/{symbol}")
+        return {"ok": True, "provider": provider, "kind": kind, "symbol": symbol, "data": data}
+
+    @app.get("/paper-sessions/market-data-status", dependencies=auth_dependencies)
+    async def get_market_data_status(provider: Optional[str] = Query(None)):
+        """Read the last sync status for one or all providers."""
+        from src.market_data import MarketDataStore
+
+        store = MarketDataStore()
+        statuses = await run_in_threadpool(store.get_status, provider)
+        return {"ok": True, "providers": statuses}
+
     @app.post("/paper-sessions/position-reconciler/run", dependencies=auth_dependencies)
     async def run_position_reconciler(dry_run: bool = Query(True, description="When true, report only; do not place orders.")):
         """Run the Step 2 position reconciler to check and repair TP/SL protection.

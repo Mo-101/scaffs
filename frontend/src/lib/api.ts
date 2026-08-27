@@ -75,6 +75,12 @@ export const api = {
   syncBinanceMarketData: async (): Promise<any> => post("/paper-sessions/binance-testnet/market-data/sync"),
   getBinanceMarketData: async (symbol?: string): Promise<any> =>
     get("/paper-sessions/binance-testnet/market-data" + (symbol ? `?symbol=${encodeURIComponent(symbol)}` : "")),
+  syncMarketData: async (provider: string): Promise<any> => post(`/paper-sessions/market-data/sync/${provider}`),
+  syncAllMarketData: async (): Promise<any> => post("/paper-sessions/market-data/sync-all"),
+  getMarketData: async (provider: string, kind: string = "tickers", symbol?: string): Promise<any> =>
+    get(`/paper-sessions/market-data/${provider}?kind=${kind}${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ""}`),
+  getMarketDataStatus: async (provider?: string): Promise<any> =>
+    get("/paper-sessions/market-data-status" + (provider ? `?provider=${encodeURIComponent(provider)}` : "")),
   getSignalQueuePending: async (limit?: number): Promise<any> =>
     get(`/paper-sessions/signal-queue/pending${limit ? `?limit=${limit}` : ""}`),
   getSignalQueueHistory: async (limit?: number): Promise<any> =>

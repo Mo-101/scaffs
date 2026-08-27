@@ -1,4 +1,4 @@
-# Contributing to Vibe-Trading
+# Contributing to Scaffs
 
 Vibe-Trading is a natural-language finance research AI agent (FastAPI + ReAct
 agent backend, Vite+React frontend, vectorized daily and options backtesting).

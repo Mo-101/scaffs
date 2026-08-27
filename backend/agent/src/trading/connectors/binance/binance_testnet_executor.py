@@ -98,7 +98,26 @@ def _to_pre_trade_intent(intent: TradeIntent):
             timestamp_epoch=epoch,
             status="OK",
         ),
+        stop_loss=Decimal(str(intent.stop_loss)) if intent.stop_loss is not None else None,
+        take_profit=Decimal(str(intent.take_profit)) if intent.take_profit is not None else None,
+        range_metadata=intent.range_metadata,
     )
+
+
+def _round_to_tick(value: float, tick: float) -> float:
+    return round(value / tick) * tick
+
+
+def _validate_tp_sl(side: str, mark: float, sl: float | None, tp: float | None) -> tuple[float | None, float | None, str]:
+    """Return (sl, tp, status). Drop any boundary that is on the wrong side of mark."""
+    if side.upper() in ("BUY", "LONG"):
+        valid_sl = sl if sl is not None and sl < mark else None
+        valid_tp = tp if tp is not None and tp > mark else None
+        return valid_sl, valid_tp, "VALID"
+    # SELL/SHORT
+    valid_sl = sl if sl is not None and sl > mark else None
+    valid_tp = tp if tp is not None and tp < mark else None
+    return valid_sl, valid_tp, "VALID"
 
 
 class BinanceTestnetExecutor:
@@ -108,6 +127,7 @@ class BinanceTestnetExecutor:
     - Persists every intent and every execution result.
     - Keeps Binance-specific symbol/parameter mapping inside this adapter.
     - Relies on ``futures_sdk.place_order`` to enforce the testnet guard.
+    - Attaches TP/SL protective orders as soon as an entry is filled.
     """
 
     def __init__(self, client: Optional[BinanceFuturesClient] = None) -> None:
@@ -217,6 +237,55 @@ class BinanceTestnetExecutor:
         _persist_result(session_dir, result)
         return result
 
+    def _attach_protective_orders(
+        self,
+        pre_trade_intent: Any,
+        mark_price: float,
+    ) -> tuple[list[dict[str, Any]], str, str | None]:
+        """Attach STOP_MARKET (SL) and TAKE_PROFIT_MARKET (TP) closePosition orders.
+
+        Returns (orders, status, error). status is "PROTECTED" if both attached,
+        "PROTECTION_FAILED" if one or more failed. Each order dict has the
+        Binance response and order_id.
+        """
+        sl = float(pre_trade_intent.stop_loss) if pre_trade_intent.stop_loss is not None else None
+        tp = float(pre_trade_intent.take_profit) if pre_trade_intent.take_profit is not None else None
+        sl, tp, _ = _validate_tp_sl(pre_trade_intent.side, mark_price, sl, tp)
+
+        protective_orders: list[dict[str, Any]] = []
+        entry_side = pre_trade_intent.side.upper()
+        exit_side = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
+        tick = self.client.get_price_tick_size(pre_trade_intent.symbol)
+        base_cid = pre_trade_intent.intent_id[:28]
+
+        def place_protective(order_type: str, stop_price: float, suffix: str) -> dict[str, Any]:
+            formatted = _round_to_tick(stop_price, tick)
+            cid = f"{base_cid}{suffix}"
+            return self.client.place_algo_order(
+                symbol=pre_trade_intent.symbol,
+                side=exit_side,
+                order_type=order_type,
+                trigger_price=formatted,
+                close_position=True,
+                client_algo_id=cid,
+                intent_id=pre_trade_intent.intent_id,
+            )
+
+        error_parts: list[str] = []
+        if sl is not None:
+            try:
+                protective_orders.append(place_protective("STOP_MARKET", sl, "_sl"))
+            except Exception as exc:
+                error_parts.append(f"SL failed: {exc}")
+        if tp is not None:
+            try:
+                protective_orders.append(place_protective("TAKE_PROFIT_MARKET", tp, "_tp"))
+            except Exception as exc:
+                error_parts.append(f"TP failed: {exc}")
+
+        status = "PROTECTED" if not error_parts else "PROTECTION_FAILED"
+        return protective_orders, status, "; ".join(error_parts) if error_parts else None
+
     def _submit_real(
         self,
         intent: TradeIntent,
@@ -270,19 +339,53 @@ class BinanceTestnetExecutor:
             )
             order = response.get("order") or {}
             exchange_status = (order.get("status") or "NEW").upper()
+            order_id = str(order.get("orderId")) if order.get("orderId") else None
+
+            # Market orders on liquid pairs often return NEW first and fill
+            # milliseconds later. Confirm the actual fill state before attaching
+            # protective closePosition orders.
+            if exchange_status != "FILLED" and order_id:
+                for _ in range(5):
+                    time.sleep(0.2)
+                    try:
+                        confirmed = self.client.get_order(pre_trade_intent.symbol, order_id=int(order_id))
+                        if (confirmed.get("status") or "").upper() == "FILLED" or float(confirmed.get("executedQty", 0) or 0) > 0:
+                            order = confirmed
+                            exchange_status = (order.get("status") or "NEW").upper()
+                            break
+                    except Exception:
+                        pass
+
             result_status = "FILLED" if exchange_status == "FILLED" else "SUBMITTED"
+            filled_qty = float(order.get("executedQty", 0) or 0)
+            filled_price = float(order.get("avgPrice", 0) or order.get("price", 0) or 0)
             result = ExecutionResult(
                 intent_id=pre_trade_intent.intent_id,
                 status=result_status,
                 exchange="binance",
                 environment="testnet",
-                exchange_order_id=str(order.get("orderId")) if order.get("orderId") else None,
+                exchange_order_id=order_id,
                 submitted_at=_now_iso(),
                 raw_status=response,
+                filled_qty=filled_qty,
+                filled_price=filled_price,
                 target_notional=target_notional,
                 actual_notional=actual_notional,
                 leverage=confirmed_leverage,
             )
+
+            if result_status == "FILLED" and (
+                pre_trade_intent.stop_loss is not None or pre_trade_intent.take_profit is not None
+            ):
+                mark_price = float(pre_trade_intent.market_snapshot.mark_price)
+                protective_orders, protection_status, protection_error = self._attach_protective_orders(
+                    pre_trade_intent, mark_price
+                )
+                result.protective_orders = protective_orders
+                result.protection_status = protection_status
+                if protection_status == "PROTECTION_FAILED":
+                    result.status = "PROTECTION_FAILED"
+                    result.error = protection_error or "Protective order(s) failed"
         except Exception as exc:
             logger.warning("Binance live testnet order submission failed for %s: %s", pre_trade_intent.intent_id, exc)
             result = ExecutionResult(

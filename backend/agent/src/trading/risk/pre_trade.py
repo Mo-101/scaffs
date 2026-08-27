@@ -27,6 +27,9 @@ class TradeIntent:
     reduce_only: bool
     requested_leverage: Decimal
     market_snapshot: MarketSnapshot
+    stop_loss: Decimal | None = None
+    take_profit: Decimal | None = None
+    range_metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

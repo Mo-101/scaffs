@@ -26,6 +26,9 @@ class TradeIntent:
     notional: Optional[float] = None
     order_type: OrderType = "MARKET"
     limit_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    range_metadata: Optional[dict[str, Any]] = None
     reduce_only: bool = False
     reason: str = ""
     signal_timestamp: str = ""
@@ -37,13 +40,13 @@ class TradeIntent:
         return asdict(self)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ExecutionResult:
     """Normalized outcome of an execution attempt, independent of exchange."""
 
     intent_id: str
     status: Literal[
-        "DRY_RUN", "SUBMITTED", "FILLED", "PARTIALLY_FILLED", "CANCELED", "EXPIRED", "FAILED", "REJECTED"
+        "DRY_RUN", "SUBMITTED", "FILLED", "PARTIALLY_FILLED", "CANCELED", "EXPIRED", "FAILED", "REJECTED", "PROTECTION_FAILED"
     ]
     exchange: str = "binance"
     environment: str = "testnet"
@@ -58,6 +61,8 @@ class ExecutionResult:
     target_notional: Optional[float] = None
     actual_notional: Optional[float] = None
     leverage: Optional[float] = None
+    protective_orders: Optional[list[dict[str, Any]]] = None
+    protection_status: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

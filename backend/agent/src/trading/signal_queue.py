@@ -516,6 +516,14 @@ class SignalQueueManager:
                 limit_price = round(math.ceil(raw_price / tick) * tick, 8)
 
         timestamp = datetime.now(timezone.utc).isoformat()
+        sl = criteria.get("stop_loss")
+        tp = criteria.get("take_profit")
+        range_meta = {
+            "entry": criteria.get("entry"),
+            "stop_loss": sl,
+            "take_profit": tp,
+            "regime": criteria.get("regime"),
+        }
         intent = TradeIntent(
             intent_id=queue_id,
             strategy_id=strategy,
@@ -525,6 +533,9 @@ class SignalQueueManager:
             notional=notional_usd,
             order_type=order_type,
             limit_price=limit_price,
+            stop_loss=float(sl) if sl is not None else None,
+            take_profit=float(tp) if tp is not None else None,
+            range_metadata=range_meta,
             reduce_only=False,
             reason=f"signal {queue_id}",
             signal_timestamp=timestamp,
@@ -577,6 +588,40 @@ class SignalQueueManager:
                     "queue_id": queue_id,
                     "order_id": order_id,
                     "client_order_id": client_order_id,
+                    "fill_summary": fill_summary,
+                    "execution_result": result.to_dict(),
+                }
+
+            if result.status == "PROTECTION_FAILED":
+                order_id = result.exchange_order_id or ""
+                client_order_id = queue_id[:32]
+                fill_summary = self._reconcile_order(client, clean_sym, queue_id, order_id)
+                criteria["execution"] = fill_summary
+                criteria["protective_orders"] = result.to_dict().get("protective_orders", [])
+                criteria["protection_status"] = result.to_dict().get("protection_status")
+                with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE paper_trading.signal_queue
+                        SET status = 'PROTECTION_FAILED',
+                            execution_order_id = %s,
+                            execution_client_order_id = %s,
+                            topsis_score = %s,
+                            criteria_vector = %s,
+                            dispatched_at = NOW(),
+                            completed_at = NOW()
+                        WHERE id = %s;
+                        """,
+                        (order_id, client_order_id, topsis_score, Json(criteria), queue_id),
+                    )
+                    conn.commit()
+                logger.warning("Signal [%s] entry filled but protective orders failed: %s", queue_id, result.error)
+                return {
+                    "ok": False,
+                    "status": "PROTECTION_FAILED",
+                    "queue_id": queue_id,
+                    "order_id": order_id,
+                    "reason": result.error,
                     "fill_summary": fill_summary,
                     "execution_result": result.to_dict(),
                 }

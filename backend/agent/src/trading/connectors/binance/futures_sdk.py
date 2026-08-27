@@ -567,6 +567,7 @@ class BinanceFuturesClient:
         time_in_force: str = "GTC",
         reduce_only: bool = False,
         stop_price: float | None = None,
+        close_position: bool = False,
         client_order_id: Optional[str] = None,
         intent_id: Optional[str] = None,
         signal_id: Optional[str] = None,
@@ -610,6 +611,8 @@ class BinanceFuturesClient:
             params["timeInForce"] = time_in_force
         if reduce_only:
             params["reduceOnly"] = "true"
+        if close_position:
+            params["closePosition"] = "true"
         if stop_price is not None:
             params["stopPrice"] = f"{stop_price:.8f}".rstrip("0").rstrip(".")
 
@@ -717,6 +720,57 @@ class BinanceFuturesClient:
                     logger.error("Failed to reconcile order status after cancel error: %s", query_err)
 
             raise
+
+    def place_algo_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        trigger_price: float,
+        close_position: bool = False,
+        price: float | None = None,
+        working_type: str = "CONTRACT_PRICE",
+        client_algo_id: Optional[str] = None,
+        intent_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Place a USD-M Futures algo/conditional order (e.g. STOP_MARKET, TAKE_PROFIT_MARKET).
+
+        As of Dec 2025 Binance routes conditional orders through /fapi/v1/algoOrder.
+        """
+        self._require_testnet("place_algo_order")
+        formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
+        norm_side = "BUY" if side.upper() in ("BUY", "LONG") else "SELL"
+        cid = client_algo_id or generate_deterministic_client_order_id(
+            formatted_symbol,
+            norm_side,
+            intent_id=intent_id,
+            quantity=None,
+            price=trigger_price,
+        )
+
+        params: dict[str, Any] = {
+            "symbol": formatted_symbol,
+            "side": norm_side,
+            "algoType": "CONDITIONAL",
+            "type": order_type.upper(),
+            "triggerPrice": f"{trigger_price:.8f}".rstrip("0").rstrip("."),
+            "workingType": working_type,
+            "clientAlgoId": cid,
+        }
+        if close_position:
+            params["closePosition"] = "true"
+        if price is not None:
+            params["price"] = f"{price:.8f}".rstrip("0").rstrip(".")
+
+        raw_order = self._request("POST", "/fapi/v1/algoOrder", params=params, signed=True)
+        return {
+            "ok": True,
+            "algo_id": raw_order.get("algoId"),
+            "client_algo_id": cid,
+            "status": raw_order.get("algoStatus"),
+            "order": raw_order,
+            "outcome_class": BinanceOutcomeClass.SUCCESS.value,
+        }
 
     def get_order_trades(self, symbol: str, order_id: int) -> list[dict[str, Any]]:
         """Fetch user trades (fills) for a specific order."""

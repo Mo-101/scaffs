@@ -34,7 +34,7 @@ export DATABASE_URL="postgresql://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${
 
 case "$1" in
   api)
-    exec python api_server.py
+    exec python api_server.py --host 0.0.0.0 --port 8000
     ;;
   worker)
     exec python start_all_services.py

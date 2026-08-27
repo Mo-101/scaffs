@@ -1,0 +1,45 @@
+#!/bin/bash
+set -eo pipefail
+
+# shellcheck source=/app/.env
+test -f /app/.env && source /app/.env
+
+cd /app/backend/agent
+
+PGHOST="${POSTGRES_HOST:-postgres}"
+PGPORT="${POSTGRES_PORT:-5432}"
+PGUSER="${POSTGRES_USER:-postgres}"
+PGPASSWORD="${POSTGRES_PASSWORD:-}"
+PGDB="${POSTGRES_DB:-mostar}"
+
+# Wait for Postgres
+for i in $(seq 1 30); do
+  if pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+# Apply migrations
+if [ -d /app/migrations ]; then
+  for f in /app/migrations/*.sql; do
+    [ -f "$f" ] || continue
+    PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -f "$f" >/dev/null 2>&1 || true
+  done
+fi
+
+# Override psycopg to use the docker network database
+export VIBE_PAPER_DATABASE_URL="host=$PGHOST dbname=$PGDB port=$PGPORT user=$PGUSER password=$PGPASSWORD"
+export DATABASE_URL="postgresql://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDB}"
+
+case "$1" in
+  api)
+    exec python api_server.py
+    ;;
+  worker)
+    exec python start_all_services.py
+    ;;
+  *)
+    exec "$@"
+    ;;
+esac

@@ -1,15 +1,12 @@
 #!/bin/bash
 set -eo pipefail
 
-# shellcheck source=/app/.env
-test -f /app/.env && source /app/.env
-
 cd /app/backend/agent
 
 PGHOST="${POSTGRES_HOST:-postgres}"
 PGPORT="${POSTGRES_PORT:-5432}"
 PGUSER="${POSTGRES_USER:-postgres}"
-PGPASSWORD="${POSTGRES_PASSWORD:-}"
+PGPASSWORD="${POSTGRES_PASSWORD:-mostar}"
 PGDB="${POSTGRES_DB:-mostar}"
 
 # Wait for Postgres

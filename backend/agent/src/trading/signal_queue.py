@@ -355,50 +355,6 @@ class SignalQueueManager:
 
         return True, "Flat inventory — execution clear."
 
-    def _has_unresolved_position(self, symbol: str) -> Tuple[bool, str]:
-        """Block new entries while a symbol is quarantined, closing, or failed protection."""
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT 'QUARANTINE', reason
-                FROM paper_trading.quarantine
-                WHERE symbol = %s AND resolved_at IS NULL
-                LIMIT 1;
-                """,
-                (symbol,),
-            )
-            row = cur.fetchone()
-            if row:
-                return True, f"symbol {symbol} has unresolved {row[0]}: {row[1]}"
-
-            cur.execute(
-                """
-                SELECT client_order_id
-                FROM paper_trading.close_reservations
-                WHERE symbol = %s AND status IN ('PENDING', 'SUBMITTED')
-                LIMIT 1;
-                """,
-                (symbol,),
-            )
-            row = cur.fetchone()
-            if row:
-                return True, f"symbol {symbol} has pending close reservation {row[0]}"
-
-            cur.execute(
-                """
-                SELECT id
-                FROM paper_trading.signal_queue
-                WHERE symbol = %s AND status = 'PROTECTION_FAILED'
-                LIMIT 1;
-                """,
-                (symbol,),
-            )
-            row = cur.fetchone()
-            if row:
-                return True, f"symbol {symbol} has unresolved PROTECTION_FAILED signal {row[0]}"
-
-        return False, "symbol has no unresolved position"
-
     def _target_leverage(self, target_strategy: str) -> int:
         if target_strategy.endswith("_10x"):
             return 10
@@ -488,23 +444,6 @@ class SignalQueueManager:
                 )
                 conn.commit()
             return {"ok": False, "status": "COLLISION_BLOCKED", "reason": collision_note}
-
-        # 2b. Unresolved Position Gate
-        unresolved, unresolved_note = self._has_unresolved_position(clean_sym)
-        if unresolved:
-            with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE paper_trading.signal_queue
-                    SET status = 'REJECTED',
-                        rejection_reason = %s,
-                        completed_at = NOW()
-                    WHERE id = %s;
-                    """,
-                    (unresolved_note, queue_id),
-                )
-                conn.commit()
-            return {"ok": False, "status": "SYMBOL_HAS_UNRESOLVED_POSITION", "reason": unresolved_note}
 
         # 3. Risk/execution environment defaults tuned for $100 signal notional.
         os.environ.setdefault("MAX_TRADE_NOTIONAL_USDT", "1000")

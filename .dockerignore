@@ -1,0 +1,16 @@
+# Sensitive env files
+.env
+.env.*
+!.env.example
+
+# Local sessions/uploads
+paper_sessions/
+uploads/
+
+# Python/Node build caches
+__pycache__/
+*.pyc
+node_modules/
+
+# Git
+.git

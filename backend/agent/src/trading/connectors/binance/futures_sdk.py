@@ -831,6 +831,25 @@ class BinanceFuturesClient:
         return self._request("GET", "/fapi/v1/allAlgoOrders", params=params, signed=True)
 
 
+    def get_exchange_info(self) -> dict[str, Any]:
+        """Fetch public exchangeInfo (symbols, filters, assets, etc.)."""
+        return self._load_exchange_info()
+
+    def get_leverage_brackets(self, symbol: Optional[str] = None) -> list[dict[str, Any]]:
+        """Fetch USD-M futures leverage brackets, optionally for one symbol."""
+        params: dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = _format_symbol(symbol)
+        return self._request("GET", "/fapi/v1/leverageBracket", params=params, signed=False)
+
+    def get_funding_rate(self, symbol: Optional[str] = None) -> list[dict[str, Any]]:
+        """Fetch latest funding rates, optionally for one symbol."""
+        params: dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = _format_symbol(symbol)
+        return self._request("GET", "/fapi/v1/fundingRate", params=params, signed=False)
+
+
 # Convenience singleton helper
 _client_instance: Optional[BinanceFuturesClient] = None
 

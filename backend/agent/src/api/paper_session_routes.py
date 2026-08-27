@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 AuthDep = Callable[..., Any]
 
 PAPER_SESSIONS_DIR = Path(__file__).resolve().parents[2] / "paper_sessions"
+MARKET_DATA_DIR = PAPER_SESSIONS_DIR / "market_data"
 REGISTRY_PATH = Path(__file__).resolve().parents[2] / "config" / "paper_sessions_registry.json"
 _SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -1187,6 +1188,72 @@ def register_paper_session_routes(
         except Exception as exc:
             logger.warning("Binance Testnet market snapshot failed: %s", exc)
             raise HTTPException(status_code=502, detail=f"Binance Testnet market snapshot failed: {exc}") from exc
+
+    @app.post("/paper-sessions/binance-testnet/market-data/sync", dependencies=auth_dependencies)
+    async def sync_binance_testnet_market_data():
+        """Fetch and persist live Binance Futures Testnet market metadata."""
+        from src.trading.connectors.binance.market_data_store import MarketDataStore
+
+        store = MarketDataStore(store_dir=MARKET_DATA_DIR)
+        try:
+            return await run_in_threadpool(store.sync)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.warning("Binance market-data sync failed: %s", exc)
+            raise HTTPException(
+                status_code=502, detail=f"Binance market-data sync failed: {exc}"
+            ) from exc
+
+    @app.get("/paper-sessions/binance-testnet/market-data", dependencies=auth_dependencies)
+    async def get_binance_testnet_market_data(symbol: Optional[str] = Query(None)):
+        """Read the cached market-data snapshot, optionally filtered to one symbol."""
+        from src.trading.connectors.binance.futures_sdk import _format_symbol
+
+        symbols_path = MARKET_DATA_DIR / "symbols.json"
+        if not symbols_path.exists():
+            raise HTTPException(status_code=404, detail="Market data has not been synced yet")
+
+        symbols = json.loads(symbols_path.read_text(encoding="utf-8"))
+        if symbol:
+            target = _format_symbol(symbol)
+            for s in symbols:
+                if s.get("symbol", "") == target:
+                    return {"ok": True, "symbol": symbol, "info": s}
+            raise HTTPException(status_code=404, detail=f"No market data for {symbol}")
+
+        saved_at = None
+        market_data_path = MARKET_DATA_DIR / "market_data.json"
+        if market_data_path.exists():
+            saved_at = json.loads(market_data_path.read_text(encoding="utf-8")).get("saved_at")
+        return {
+            "ok": True,
+            "saved_at": saved_at,
+            "symbol_count": len(symbols),
+            "symbols": symbols,
+        }
+
+    @app.get("/paper-sessions/binance-testnet/market-data/funding-rate", dependencies=auth_dependencies)
+    async def get_binance_testnet_funding_rate(symbol: str = Query(..., description="USD-M futures symbol, e.g. BTCUSDT")):
+        """Return the cached funding rate for a single symbol."""
+        from src.trading.connectors.binance.market_data_store import MarketDataStore
+
+        store = MarketDataStore(store_dir=MARKET_DATA_DIR)
+        try:
+            funding_rate = await run_in_threadpool(store.get_funding_rate, symbol)
+            if not funding_rate:
+                raise HTTPException(
+                    status_code=404, detail=f"No funding rate for {symbol}"
+                )
+            return {"ok": True, "symbol": symbol, "funding_rate": funding_rate}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Market data has not been synced yet") from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to read funding rate: {exc}"
+            ) from exc
 
     @app.post("/paper-sessions/position-reconciler/run", dependencies=auth_dependencies)
     async def run_position_reconciler(dry_run: bool = Query(True, description="When true, report only; do not place orders.")):

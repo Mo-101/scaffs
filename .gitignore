@@ -56,3 +56,6 @@ htmlcov/
 *.bak
 .DS_Store
 Thumbs.db
+
+# Live market-data runtime cache (recreated by API sync)
+backend/agent/paper_sessions/market_data/

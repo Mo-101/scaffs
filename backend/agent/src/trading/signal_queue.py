@@ -184,6 +184,7 @@ class SignalQueueManager:
         source_signal_id: Optional[str] = None,
         criteria_vector: Optional[Dict[str, Any]] = None,
         ttl_seconds: int = 300,
+        conn: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Validate, route, and persist a new candidate signal into the queue."""
         clean_sym = symbol.upper().replace("-", "").replace("/", "")
@@ -226,33 +227,39 @@ class SignalQueueManager:
         )
         queue_id = str(uuid.uuid4())
 
-        # 3. Insert into PostgreSQL
-        with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO paper_trading.signal_queue (
-                    id, source_signal_id, producer, symbol, side, timeframe,
-                    raw_score, criteria_vector, target_strategy, status, ttl_seconds
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s,
-                    %s, %s::jsonb, %s, 'PENDING', %s
-                ) RETURNING id, created_at;
-                """,
-                (
-                    queue_id,
-                    source_signal_id,
-                    producer,
-                    clean_sym,
-                    clean_side,
-                    timeframe,
-                    raw_score,
-                    json.dumps(crit),
-                    target_strategy,
-                    ttl_seconds,
-                ),
-            )
-            res = cur.fetchone()
-            conn.commit()
+        # 3. Insert into PostgreSQL (reuse external connection when given)
+        con = conn or psycopg.connect(self.dsn)
+        should_close = conn is None
+        try:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO paper_trading.signal_queue (
+                        id, source_signal_id, producer, symbol, side, timeframe,
+                        raw_score, criteria_vector, target_strategy, status, ttl_seconds
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s::jsonb, %s, 'PENDING', %s
+                    ) RETURNING id, created_at;
+                    """,
+                    (
+                        queue_id,
+                        source_signal_id,
+                        producer,
+                        clean_sym,
+                        clean_side,
+                        timeframe,
+                        raw_score,
+                        json.dumps(crit),
+                        target_strategy,
+                        ttl_seconds,
+                    ),
+                )
+                res = cur.fetchone()
+                con.commit()
+        finally:
+            if should_close:
+                con.close()
 
         logger.info(
             "Enqueued signal [%s] %s %s -> %s (score: %.2f)",

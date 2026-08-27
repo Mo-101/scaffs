@@ -88,71 +88,78 @@ class IdimFeedBridge:
         rejected = []
         dispatched = []
 
-        # Check active queue records to avoid re-enqueuing a signal that is still
-        # pending, dispatched or being processed. Expired/rejected/completed
-        # entries may be re-ingested so the feed stays visible on refresh.
-        existing_signal_ids = set()
+        # Use a single database connection for the whole batch; opening 20
+        # separate psycopg connections is the main cause of Idim sync stalls.
         try:
-            with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT source_signal_id
-                    FROM paper_trading.signal_queue
-                    WHERE source_signal_id IS NOT NULL
-                      AND status NOT IN ('EXPIRED','REJECTED','COMPLETED','CANCELLED','EXECUTION_FAILED','COLLISION_BLOCKED');
-                    """
-                )
-                for r in cur.fetchall():
-                    existing_signal_ids.add(r[0])
-        except Exception as e:
-            logger.warning("Could not query existing signal_ids: %s", e)
-
-        for sig in signals:
-            sig_id = str(sig.get("signal_id") or "")
-            if not sig_id or sig_id in existing_signal_ids:
-                continue
-
-            symbol = sig.get("pair") or sig.get("symbol")
-            side = sig.get("side")
-            score = float(sig.get("score") or sig.get("setup_score") or 65.0)
-            timeframe = "15m" if "15m" in str(sig.get("signal_family", "")).lower() else "5m"
-
-            crit = {
-                "regime": sig.get("regime"),
-                "btc_regime": sig.get("btc_regime"),
-                "signal_family": sig.get("signal_family"),
-                "entry": sig.get("entry"),
-                "stop_loss": sig.get("stop_loss"),
-                "take_profit": sig.get("take_profit"),
-                "reason_trace": sig.get("reason_trace"),
-            }
-
-            res = self.queue_mgr.enqueue_signal(
-                symbol=symbol,
-                side=side,
-                producer="idim_ikang",
-                timeframe=timeframe,
-                raw_score=score,
-                source_signal_id=sig_id,
-                criteria_vector=crit,
-                ttl_seconds=600,
-            )
-
-            if res.get("ok"):
-                enqueued.append(res)
-                existing_signal_ids.add(sig_id)
-
-                if auto_dispatch:
-                    try:
-                        dispatch_res = self.queue_mgr.dispatch_queued_signal(
-                            queue_id=res["id"],
-                            notional_usd=notional_usd,
+            with psycopg.connect(self.dsn) as conn:
+                # Check active queue records to avoid re-enqueuing a signal that is still
+                # pending, dispatched or being processed. Expired/rejected/completed
+                # entries may be re-ingested so the feed stays visible on refresh.
+                existing_signal_ids = set()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT source_signal_id
+                            FROM paper_trading.signal_queue
+                            WHERE source_signal_id IS NOT NULL
+                              AND status NOT IN ('EXPIRED','REJECTED','COMPLETED','CANCELLED','EXECUTION_FAILED','COLLISION_BLOCKED');
+                            """
                         )
-                        dispatched.append(dispatch_res)
-                    except Exception as e:
-                        logger.error("Failed to auto-dispatch signal %s: %s", res["id"], e)
-            else:
-                rejected.append({"symbol": symbol, "side": side, "score": score, "reason": res.get("reason")})
+                        for r in cur.fetchall():
+                            existing_signal_ids.add(r[0])
+                except Exception as e:
+                    logger.warning("Could not query existing signal_ids: %s", e)
+
+                for sig in signals:
+                    sig_id = str(sig.get("signal_id") or "")
+                    if not sig_id or sig_id in existing_signal_ids:
+                        continue
+
+                    symbol = sig.get("pair") or sig.get("symbol")
+                    side = sig.get("side")
+                    score = float(sig.get("score") or sig.get("setup_score") or 65.0)
+                    timeframe = "15m" if "15m" in str(sig.get("signal_family", "")).lower() else "5m"
+
+                    crit = {
+                        "regime": sig.get("regime"),
+                        "btc_regime": sig.get("btc_regime"),
+                        "signal_family": sig.get("signal_family"),
+                        "entry": sig.get("entry"),
+                        "stop_loss": sig.get("stop_loss"),
+                        "take_profit": sig.get("take_profit"),
+                        "reason_trace": sig.get("reason_trace"),
+                    }
+
+                    res = self.queue_mgr.enqueue_signal(
+                        symbol=symbol,
+                        side=side,
+                        producer="idim_ikang",
+                        timeframe=timeframe,
+                        raw_score=score,
+                        source_signal_id=sig_id,
+                        criteria_vector=crit,
+                        ttl_seconds=600,
+                        conn=conn,
+                    )
+
+                    if res.get("ok"):
+                        enqueued.append(res)
+                        existing_signal_ids.add(sig_id)
+
+                        if auto_dispatch:
+                            try:
+                                dispatch_res = self.queue_mgr.dispatch_queued_signal(
+                                    queue_id=res["id"],
+                                    notional_usd=notional_usd,
+                                )
+                                dispatched.append(dispatch_res)
+                            except Exception as e:
+                                logger.error("Failed to auto-dispatch signal %s: %s", res["id"], e)
+                    else:
+                        rejected.append({"symbol": symbol, "side": side, "score": score, "reason": res.get("reason")})
+        except Exception as exc:
+            logger.error("Idim sync batch failed: %s", exc)
 
         return {
             "ok": True,

@@ -14,7 +14,7 @@
     "SOL-USDT": 98.12,
     "BNB-USDT": 694.4
   },
-  "rebalance_interval_hours": 0.08333333333333333,
+  "rebalance_interval_hours": 24.0,
   "fee_rate": 0.0005,
   "source": "binance",
   "price_kind": "live_ticker_last",
@@ -25,10 +25,10 @@
   "accounting_status": "OK",
   "min_rebalance_notional": 10.0,
   "risk_config": {
-    "take_profit_pct": null,
-    "stop_loss_pct": null,
-    "trailing_stop_pct": null,
-    "max_hold_hours": null,
+    "take_profit_pct": 0.05,
+    "stop_loss_pct": 0.03,
+    "trailing_stop_pct": 0.02,
+    "max_hold_hours": 24.0,
     "leverage": 5.0,
     "margin_mode": "isolated",
     "liquidation_buffer_pct": 0.005,

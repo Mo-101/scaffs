@@ -102,6 +102,23 @@ def initialize_all_sessions() -> None:
         except Exception as e:
             logger.warning("morning_glory_futures initialization note: %s", e)
 
+    # 4. Equal-Weight Rebalance
+    rebalance_dir = BASE_SESSIONS_DIR / "rebalance_equal_weight_v1"
+    if not (rebalance_dir / "session.json").exists():
+        try:
+            start_session(
+                rebalance_dir,
+                symbols=SYMBOLS,
+                initial_cash=DEFAULT_CASH,
+                rebalance_interval_hours=1.0,
+                fee_rate=0.0005,
+                min_rebalance_notional=0.1,
+                risk_config=_default_risk_config(leverage=5.0, margin_mode="isolated"),
+            )
+            logger.info("Initialized rebalance_equal_weight_v1")
+        except Exception as e:
+            logger.warning("rebalance_equal_weight_v1 initialization note: %s", e)
+
 
 def run_session_worker(session_name: str, is_funding: bool = False, poll_interval_sec: int = 30) -> None:
     """Continuous worker loop for one session."""
@@ -133,10 +150,12 @@ def run_session_worker(session_name: str, is_funding: bool = False, poll_interva
 def main() -> None:
     initialize_all_sessions()
 
-    # Active sessions: grid 5x/10x only for autonomous test
+    # Active sessions: all retained paper workers
     sessions_to_run = [
+        ("rebalance_equal_weight_v1", False, 30),
         ("grid_futures_5x_v3", False, 30),
         ("grid_futures_10x_v3", False, 30),
+        ("morning_glory_futures", True, 60),
     ]
 
     threads: list[threading.Thread] = []

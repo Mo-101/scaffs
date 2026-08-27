@@ -1366,6 +1366,7 @@ def _build_mark(
     prices: dict[str, float],
     *,
     now: Optional[str] = None,
+    market_data_source: Optional[str] = None,
 ) -> dict[str, Any]:
     positions = book["positions"]
     pos_meta = book.get("position_metadata", {})
@@ -1406,6 +1407,7 @@ def _build_mark(
     return {
         "timestamp": now if now is not None else _now_iso(),
         "prices": prices,
+        "market_data_source": market_data_source,
         "position_values": position_values,
         "position_pnl": position_pnl,
         "cash_remaining": cash,
@@ -1431,6 +1433,7 @@ def mark_once(
     *,
     prices: Optional[dict[str, float]] = None,
     now: Optional[str] = None,
+    market_data_source: Optional[str] = None,
 ) -> dict[str, Any]:
     """Compute one mark-to-market snapshot, append it, return it.
 
@@ -1441,8 +1444,13 @@ def mark_once(
     """
     session = _load_session(session_dir)
     book = _load_book(session_dir)
-    prices = dict(prices) if prices is not None else fetch_last_prices(session["symbols"])
-    mark = _build_mark(session, book, prices, now=now)
+    if prices is not None:
+        prices = dict(prices)
+    else:
+        result = fetch_last_prices_with_source(session["symbols"])
+        prices = result.prices
+        market_data_source = market_data_source or result.source
+    mark = _build_mark(session, book, prices, now=now, market_data_source=market_data_source)
     _append_jsonl(session_dir / "marks.jsonl", mark)
     _mirror_mark_to_store(session_dir.name, mark)
     return mark

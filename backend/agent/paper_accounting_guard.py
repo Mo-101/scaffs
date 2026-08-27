@@ -120,6 +120,8 @@ def assess_accounting(
     equity: float,
     realized_pnl: float,
     unrealized_pnl: float | None,
+    funding_pnl: float = 0.0,
+    fees: float = 0.0,
     stale_mark_symbols: Sequence[str] = (),
     position_differences: Mapping[str, Mapping[str, float]] | None = None,
     abs_tolerance: float = 1e-6,
@@ -182,7 +184,7 @@ def assess_accounting(
         )
 
     residual = float(equity) - (
-        float(initial_cash) + float(realized_pnl) + float(unrealized_pnl)
+        float(initial_cash) + float(realized_pnl) + float(unrealized_pnl) + float(funding_pnl) - float(fees)
     )
     tolerance = max(float(abs_tolerance), abs(float(equity)) * float(rel_tolerance))
 

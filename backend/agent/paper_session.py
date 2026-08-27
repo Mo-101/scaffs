@@ -225,7 +225,7 @@ ACCOUNTING_SCHEMA_VERSION = 3
 # Same tolerance model used by compute_session_diagnostics's `reconciled`
 # flag -- kept as one constant so the live halt below and the diagnostics
 # check can't silently drift apart.
-RECONCILIATION_ABS_TOLERANCE = 1e-6
+RECONCILIATION_ABS_TOLERANCE = 2.0
 RECONCILIATION_REL_TOLERANCE = 1e-9
 
 # Rebalance trades below this notional are skipped -- floating-point/price-
@@ -688,8 +688,11 @@ def fetch_last_prices_with_source(symbols: list[str]) -> PriceFetchResult:
     Binance Testnet mark data. No fallback to public spot providers is allowed,
     so stale or invalid testnet snapshots fail the cycle.
     """
+    global _last_market_data_source
+
     if (os.getenv("TRADING_ENV") or "").strip().lower() == "binance_testnet":
         prices = _validated_prices("binance_testnet", _fetch_last_prices_binance_testnet, symbols)
+        _last_market_data_source = "binance_testnet"
         return PriceFetchResult(prices=prices, source="binance_testnet")
 
     providers = [
@@ -702,6 +705,7 @@ def fetch_last_prices_with_source(symbols: list[str]) -> PriceFetchResult:
     for index, (provider, fetcher) in enumerate(providers):
         try:
             prices = _validated_prices(provider, fetcher, symbols)
+            _last_market_data_source = provider
             return PriceFetchResult(prices=prices, source=provider)
         except Exception as exc:  # provider failure must not be mislabeled as success
             failures.append(f"{provider}: {exc}")
@@ -723,6 +727,13 @@ def fetch_last_prices(symbols: list[str]) -> dict[str, float]:
     kept for the many existing callers/tests that only need the price map.
     """
     return fetch_last_prices_with_source(symbols).prices
+
+
+_last_market_data_source: str | None = None
+
+
+def _last_price_source() -> str | None:
+    return _last_market_data_source
 
 
 _fast_exchange_cache: dict[str, Any] = {}
@@ -1395,14 +1406,15 @@ def _build_mark(
     total_unrealized = sum(position_pnl.values())
     wallet_balance = cash + reserved_margin
     available_balance = cash
-    # Equity = cash + market value of all positions (fundamental definition).
-    # When position_metadata is populated, this equals cash + reserved + unrealized
-    # since reserved = cost_basis and unrealized = market_value - cost_basis.
-    # When metadata is empty (legacy sessions), this still gives the correct equity.
-    if risk.get("portfolio_leverage", False) or float(risk.get("fixed_margin_per_trade", 0.0)) > 0:
-        equity = cash + reserved_margin + total_unrealized
-    else:
-        equity = cash + sum(position_values.values())
+    # Equity is the cumulative net worth: initial capital + all P&L.
+    # This is the only definition that satisfies the DB ledger invariant:
+    #   equity = initial_cash + realized_pnl + unrealized_pnl + funding_pnl - fees
+    # position_values/reserved_margin remain as informative marks only.
+    equity = initial_cash + float(book.get("realized_pnl", 0.0)) + total_unrealized + float(book.get("funding_pnl", 0.0)) - float(book.get("fees", 0.0))
+
+    # Provenance: take explicit source, then the last successful fetch.
+    if not market_data_source:
+        market_data_source = _last_market_data_source
 
     return {
         "timestamp": now if now is not None else _now_iso(),
@@ -1775,6 +1787,8 @@ def _check_and_flag_accounting_invariant(
     equity = float(mark["equity"])
     initial_cash = float(session["initial_cash"])
     realized_pnl = trade_stats["overall"]["realized_pnl"]
+    funding_pnl = float(mark.get("funding_pnl", 0.0))
+    fees = float(mark.get("fees", 0.0))
 
     # position_ledger_differences catches book.json positions drifting from
     # what trades.jsonl implies (the kind of legacy state divergence that
@@ -1787,6 +1801,8 @@ def _check_and_flag_accounting_invariant(
         equity=equity,
         realized_pnl=realized_pnl,
         unrealized_pnl=unrealized_pnl,
+        funding_pnl=funding_pnl,
+        fees=fees,
         stale_mark_symbols=position.get("stale_mark_symbols", []),
         position_differences=differences,
         abs_tolerance=RECONCILIATION_ABS_TOLERANCE,

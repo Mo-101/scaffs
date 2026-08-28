@@ -20,7 +20,7 @@ from src.trading.position.provenance import aggregate_fills
 logger = logging.getLogger(__name__)
 
 DEFAULT_DSN = "dbname=mostar port=5433"
-_ORIGIN_STATUSES = ("DISPATCHED", "PROTECTION_FAILED")
+_ORIGIN_STATUSES = ("DISPATCHED", "PARTIALLY_FILLED", "PROTECTED", "PROTECTION_FAILED")
 
 
 class ResolutionAction(str, Enum):

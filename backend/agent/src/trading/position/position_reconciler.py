@@ -37,7 +37,7 @@ from src.trading.position.position_close import reduce_only_close, PositionClose
 logger = logging.getLogger(__name__)
 
 DEFAULT_DSN = "dbname=mostar port=5433"
-_ORIGIN_STATUSES = ("DISPATCHED", "PROTECTION_FAILED")
+_ORIGIN_STATUSES = ("DISPATCHED", "PARTIALLY_FILLED", "PROTECTED", "PROTECTION_FAILED")
 
 
 def _position_side(position: dict[str, Any]) -> str:

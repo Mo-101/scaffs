@@ -75,7 +75,7 @@ function cacheFromRun(run: RunData | null, requestedSymbol?: string): ChartCache
     cache[symbol] = {
       price_series: { [symbol]: bars },
       indicator_series: run.indicator_series?.[symbol] ? { [symbol]: run.indicator_series[symbol] } : {},
-      trade_markers: markerRows.filter((marker) => !marker.code || marker.code === symbol),
+      trade_markers: markerRows.filter((marker: any) => !marker.code || marker.code === symbol),
     };
   }
   if (requestedSymbol && !cache[requestedSymbol]) {
@@ -175,7 +175,7 @@ export function RunDetail() {
       const mergedCache = { ...chartCacheRef.current, ...nextCache };
       chartCacheRef.current = mergedCache;
       setChartCache(mergedCache);
-      setRun((prev) => prev ? {
+      setRun((prev: any) => prev ? {
         ...prev,
         chart_symbols: nextRun.chart_symbols?.length ? nextRun.chart_symbols : prev.chart_symbols,
         equity_curve: nextRun.equity_curve?.length ? nextRun.equity_curve : prev.equity_curve,
@@ -351,7 +351,7 @@ function RunCardTab({ card }: { card: RunCard }) {
             {i18n.t("runDetail.warnings")}
           </div>
           <ul className="space-y-1 text-xs text-muted-foreground">
-            {warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+            {warnings.map((warning: any, index: number) => <li key={index}>{warning}</li>)}
           </ul>
         </section>
       )}
@@ -392,7 +392,7 @@ function RunCardTab({ card }: { card: RunCard }) {
                 </tr>
               </thead>
               <tbody>
-                {artifacts.map((artifact) => (
+                {artifacts.map((artifact: any) => (
                   <tr key={`${artifact.path}-${artifact.sha256}`} className="border-b last:border-0">
                     <td className="py-2 pr-4 font-mono text-xs">{artifact.path}</td>
                     <td className="py-2 pr-4 tabular-nums text-muted-foreground">{formatBytes(artifact.size_bytes)}</td>
@@ -527,7 +527,7 @@ function ChartTab({
               onChange={(event) => onPickSymbol(event.target.value)}
               className="glass-select h-8 text-sm"
             >
-              {chartSymbols.map((symbol) => (
+              {chartSymbols.map((symbol: string) => (
                 <option key={symbol} value={symbol}>{symbol}</option>
               ))}
             </select>
@@ -597,7 +597,7 @@ function ChartTab({
       {entries.map(([sym, bars]) => (
         <div key={sym}>
           <h3 className="text-sm font-medium mb-1">{sym}</h3>
-          <CandlestickChart data={bars} markers={chartCache[sym]?.trade_markers?.filter(m => m.code === sym)} indicators={chartCache[sym]?.indicator_series?.[sym]} height={500} />
+          <CandlestickChart data={bars} markers={chartCache[sym]?.trade_markers?.filter((m: any) => m.code === sym)} indicators={chartCache[sym]?.indicator_series?.[sym]} height={500} />
         </div>
       ))}
       {hasEquity && (
@@ -627,7 +627,7 @@ function TradesTab({ run }: { run: RunData }) {
           </tr>
         </thead>
         <tbody>
-          {trades.map((tr, i) => (
+          {trades.map((tr: any, i: number) => (
             <tr key={i} className="border-b last:border-0 hover:bg-muted/20">
               <td className="py-2 pr-4 font-mono text-xs">{tr.time || tr.timestamp}</td>
               <td className="py-2 pr-4">{tr.code}</td>

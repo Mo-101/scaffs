@@ -223,3 +223,155 @@ def test_paper_routes_governance_hard_cap(monkeypatch):
     assert "Account leverage/margin mutations are decoupled" in res_decoupled.json().get("detail", "")
 
 
+def test_paper_routes_market_order_type_rejected(monkeypatch):
+    """Every entry in this system is a resting LIMIT order now; an explicit
+    order_type=MARKET must be rejected rather than silently converted."""
+    from fastapi.testclient import TestClient
+    from api_server import app
+
+    monkeypatch.setenv("BINANCE_TRADING_MODE", "testnet")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+    monkeypatch.setenv("BINANCE_FUTURES_TESTNET_HOST", "https://testnet.binancefuture.com")
+
+    client = TestClient(app)
+    res = client.post(
+        "/paper-sessions/binance-testnet/order",
+        json={"symbol": "BTCUSDT", "side": "BUY", "quantity": 0.001, "price": 50000.0, "order_type": "MARKET"},
+    )
+    assert res.status_code == 400
+    assert "not supported" in res.json().get("detail", "")
+
+
+class _FakeManualOrderClient:
+    """Minimal fake covering exactly what place_binance_testnet_order and the
+    signal-queue dispatch pipeline it now routes through need."""
+
+    def __init__(self, margin_type="ISOLATED", leverage=5, positions=None):
+        self._margin_type = margin_type
+        self._leverage = leverage
+        self._positions = positions if positions is not None else []
+
+    def get_ticker_price(self, symbol):
+        return 50000.0
+
+    def get_positions(self, symbol=None):
+        return self._positions
+
+    def get_symbol_margin_type(self, symbol):
+        return self._margin_type
+
+    def set_margin_type(self, symbol, margin_type="ISOLATED"):
+        return {"code": 200}
+
+    def get_symbol_leverage(self, symbol):
+        return self._leverage
+
+    def set_leverage(self, symbol, leverage):
+        return {"leverage": leverage}
+
+    def get_quantity_precision(self, symbol):
+        return 3
+
+    def get_price_tick_size(self, symbol):
+        return 0.01
+
+    def get_order(self, symbol=None, order_id=None, client_order_id=None):
+        return {"status": "NEW", "executedQty": "0"}
+
+    def get_order_trades(self, symbol, order_id):
+        return []
+
+
+class _FakeManualOrderExecutor:
+    last_intent = None
+
+    def __init__(self, client):
+        self.client = client
+        self.execution_enabled = False
+
+    def submit(self, intent, session_dir=None):
+        from src.trading.trade_intent import ExecutionResult
+
+        _FakeManualOrderExecutor.last_intent = intent
+        return ExecutionResult(intent_id=intent.intent_id, status="SUBMITTED", exchange_order_id="fake-manual-1")
+
+
+def _testnet_env(monkeypatch):
+    monkeypatch.setenv("BINANCE_TRADING_MODE", "testnet")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+    monkeypatch.setenv("BINANCE_FUTURES_TESTNET_HOST", "https://testnet.binancefuture.com")
+    monkeypatch.setenv("TRADING_ENV", "binance_testnet")
+
+
+def test_manual_order_routes_through_signal_queue_pipeline(monkeypatch):
+    """The direct order endpoint no longer calls client.place_order itself --
+    it must reach the SAME gateway (enqueue_signal + dispatch_queued_signal)
+    as /signal-queue/dispatch, gaining collision/margin/leverage/risk-gate
+    parity for free instead of duplicating checks."""
+    import src.trading.connectors.binance.futures_sdk as futures_sdk_module
+    import src.trading.connectors.binance.binance_testnet_executor as bte_module
+    from fastapi.testclient import TestClient
+    from api_server import app
+
+    _testnet_env(monkeypatch)
+    fake_client = _FakeManualOrderClient()
+    monkeypatch.setattr(futures_sdk_module, "get_binance_futures_client", lambda *a, **k: fake_client)
+    monkeypatch.setattr(bte_module, "BinanceTestnetExecutor", _FakeManualOrderExecutor)
+    _FakeManualOrderExecutor.last_intent = None
+
+    client = TestClient(app)
+    # quantity(0.001) * price(50000) = $50 notional -- previously this exact
+    # combination would have spuriously tripped dispatch_queued_signal's
+    # NOTIONAL_STEP_TOO_COARSE check against its 100.0 default if notional_usd
+    # weren't derived from the order's own price/quantity.
+    res = client.post(
+        "/paper-sessions/binance-testnet/order",
+        json={
+            "symbol": "BTCUSDT", "side": "BUY", "quantity": 0.001, "price": 50000.0,
+            "stop_loss": 48000.0, "take_profit": 52000.0,
+        },
+    )
+    body = res.json()
+    assert res.status_code == 200
+    assert body["ok"] is True
+    # No more raw Binance "order" key -- the new response is the dispatch dict.
+    assert "order" not in body
+    assert body["status"] in ("DISPATCHED", "PARTIALLY_FILLED", "PROTECTED")
+    assert "governance" in body
+
+    intent = _FakeManualOrderExecutor.last_intent
+    assert intent is not None
+    assert intent.order_type == "LIMIT"
+    assert intent.stop_loss == 48000.0
+    assert intent.take_profit == 52000.0
+
+
+def test_manual_order_margin_mismatch_reachable(monkeypatch):
+    """Full parity: a margin-mode mismatch is now caught via the same
+    dispatch_queued_signal gate the signal queue uses, returned as a normal
+    200/ok:false body (not a bespoke 409 from a standalone check)."""
+    import src.trading.connectors.binance.futures_sdk as futures_sdk_module
+    import src.trading.connectors.binance.binance_testnet_executor as bte_module
+    from fastapi.testclient import TestClient
+    from api_server import app
+
+    _testnet_env(monkeypatch)
+    fake_client = _FakeManualOrderClient(margin_type="CROSSED")
+    monkeypatch.setattr(futures_sdk_module, "get_binance_futures_client", lambda *a, **k: fake_client)
+    monkeypatch.setattr(bte_module, "BinanceTestnetExecutor", _FakeManualOrderExecutor)
+    _FakeManualOrderExecutor.last_intent = None
+
+    client = TestClient(app)
+    res = client.post(
+        "/paper-sessions/binance-testnet/order",
+        json={"symbol": "BTCUSDT", "side": "BUY", "quantity": 0.001, "price": 50000.0},
+    )
+    body = res.json()
+    assert res.status_code == 200
+    assert body["ok"] is False
+    assert body["status"] == "MARGIN_MODE_MISMATCH_BLOCKED"
+    assert _FakeManualOrderExecutor.last_intent is None  # never reached the executor
+
+

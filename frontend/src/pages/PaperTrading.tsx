@@ -55,12 +55,14 @@ type PaperTab = "grid" | "timed" | "morning";
 const TAB_LABELS: Record<PaperTab, string> = { grid: "Grid Futures", timed: "Rebalance", morning: "Morning Glory" };
 
 function classifySessionTab(s: PaperSessionSummary): PaperTab {
-  return isRetainedSessionId(s.session_id) ? RETAINED_PAPER_SESSIONS[s.session_id].tab : "timed";
+  const sessionId = s.session_id;
+  return isRetainedSessionId(sessionId) ? RETAINED_PAPER_SESSIONS[sessionId].tab : "timed";
 }
 
 function sessionDisplayName(s: PaperSessionSummary): string {
-  if (isRetainedSessionId(s.session_id)) return RETAINED_PAPER_SESSIONS[s.session_id].label;
-  return s.session_id;
+  const sessionId = s.session_id;
+  if (isRetainedSessionId(sessionId)) return RETAINED_PAPER_SESSIONS[sessionId].label;
+  return sessionId;
 }
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -136,9 +138,18 @@ type UnknownRecord = Record<string, unknown>;
 export type MarketSource = "okx" | "binance" | "bybit" | "gate";
 const MARKET_SOURCE_ROUTE: readonly MarketSource[] = ["okx", "binance", "bybit", "gate"];
 
+// Explicit, closed mapping of known non-canonical raw source strings to the
+// canonical provider they actually price against. Deliberately not a suffix
+// heuristic (e.g. stripping "_testnet") -- an unrecognized raw source should
+// still surface as INVALID rather than being silently guessed at.
+const MARKET_SOURCE_ALIASES: Readonly<Record<string, MarketSource>> = {
+  binance_testnet: "binance",
+};
+
 interface MarketTelemetry {
   source: MarketSource | null;
   rawSource: string | null;
+  isTestnet: boolean;
   observedAt: string | null;
   ageMs: number | null;
   status: "OK" | "STALE" | "MISSING" | "INVALID";
@@ -168,7 +179,16 @@ export function normalizeMarketSource(value: string | null): MarketSource | null
   if (!value) return null;
   const normalized = value.trim().toLowerCase();
   if (MARKET_SOURCE_ROUTE.includes(normalized as MarketSource)) return normalized as MarketSource;
-  return null;
+  return MARKET_SOURCE_ALIASES[normalized] ?? null;
+}
+
+// Distinct from normalization: whether the raw source string names a known
+// testnet variant. Kept separate so the badge can say "this is Binance" and
+// "this is testnet" as two independent facts, never collapsing the second
+// into the first.
+function isKnownTestnetSource(value: string | null): boolean {
+  if (!value) return false;
+  return value.trim().toLowerCase() in MARKET_SOURCE_ALIASES;
 }
 
 function timeframeToMs(value: unknown): number | null {
@@ -193,6 +213,7 @@ export function marketTelemetry(s: PaperSessionSummary, nowMs: number): MarketTe
   const records = [latestMarket, latest, accountMarket, account, session, root];
   const rawSource = firstString(records, ["market_data_source", "price_source", "provider"]);
   const source = normalizeMarketSource(rawSource);
+  const isTestnet = isKnownTestnetSource(rawSource);
   const observedAt = firstString(records, [
     "market_data_observed_at",
     "price_observed_at",
@@ -216,7 +237,7 @@ export function marketTelemetry(s: PaperSessionSummary, nowMs: number): MarketTe
   else if (ageMs > staleAfterMs) status = "STALE";
   else status = "OK";
 
-  return { source, rawSource, observedAt, ageMs, status };
+  return { source, rawSource, isTestnet, observedAt, ageMs, status };
 }
 
 function moneyOrDash(value: number | null | undefined): string {
@@ -259,16 +280,28 @@ const MarketSourceBadge: React.FC<{
   source: MarketSource | null;
   rawSource?: string | null;
   status: MarketTelemetry["status"];
-}> = ({ source, rawSource, status }) => {
-  const label = source?.toUpperCase() ?? (rawSource ? `INVALID (${rawSource})` : "UNAVAILABLE");
+  isTestnet?: boolean;
+}> = ({ source, rawSource, status, isTestnet }) => {
+  const label = source
+    ? `${source.toUpperCase()}${isTestnet ? " · TESTNET" : ""}`
+    : rawSource
+      ? `INVALID (${rawSource})`
+      : "UNAVAILABLE";
+  // Testnet gets its own color lane (sky, not emerald) even when status is OK --
+  // a healthy testnet feed must never be visually indistinguishable from a
+  // healthy production feed. See ENABLE_LIVE_TRADING / the 200-trade PF>=1.30 gate.
+  const colorClass =
+    status === "OK"
+      ? isTestnet
+        ? "border-sky-800 bg-sky-950/40 text-sky-400"
+        : "border-emerald-800 bg-emerald-950/40 text-emerald-400"
+      : status === "STALE"
+        ? "border-amber-800 bg-amber-950/40 text-amber-400"
+        : "border-red-900 bg-red-950/30 text-red-400";
   return (
     <span className={cn(
       "inline-flex items-center rounded border px-1.5 py-0.5 text-[11px] font-semibold tracking-wide",
-      status === "OK"
-        ? "border-emerald-800 bg-emerald-950/40 text-emerald-400"
-        : status === "STALE"
-          ? "border-amber-800 bg-amber-950/40 text-amber-400"
-          : "border-red-900 bg-red-950/30 text-red-400",
+      colorClass,
     )}>
       {label}
     </span>
@@ -296,24 +329,29 @@ const MarketRoute: React.FC<{ active: MarketSource | null }> = ({ active }) => (
 );
 
 const OperationsSummary: React.FC<{
-  sessions: PaperSessionSummary[] | null;
   providerHealth: PaperProviderHealth | null;
   providerHealthError: string | null;
   decisionHealth: PaperDecisionHealth | null;
   binanceTestnetStatus: { ok?: boolean; configured?: boolean } | null;
   refreshAgeMs: number | null;
   nowMs: number;
-}> = ({ sessions, providerHealth, providerHealthError, decisionHealth, binanceTestnetStatus, refreshAgeMs, nowMs }) => {
-  const workers = sessions?.filter((session) => session.database_account) ?? [];
-  const freshWorkers = workers.filter((session) => {
-    const heartbeat = session.database_account?.last_heartbeat;
-    const timestamp = heartbeat ? Date.parse(heartbeat) : Number.NaN;
+}> = ({ providerHealth, providerHealthError, decisionHealth, binanceTestnetStatus, refreshAgeMs, nowMs }) => {
+  const decisionWorkers = decisionHealth?.workers ?? [];
+  // "Fresh" here means the worker's decision LOOP is still ticking, not that it
+  // has traded recently -- those are different clocks. rebalance_equal_weight_v1
+  // only trades once a day but its loop cycles every ~35-75s just like the
+  // other three workers (measured directly from paper_cycle_events: ~1150-2250
+  // cycles per 24h across all four), so one threshold safely covers all of them
+  // as long as it's checking loop cadence and not trade cadence.
+  // (`database_account`/`last_heartbeat` used previously don't exist on any
+  // session payload -- that made this tile permanently read 0/0.)
+  const freshWorkers = decisionWorkers.filter((worker: any) => {
+    const timestamp = worker.last_cycle_at ? Date.parse(worker.last_cycle_at) : Number.NaN;
     return Number.isFinite(timestamp) && nowMs - timestamp <= HEARTBEAT_STALE_AFTER_MS;
   }).length;
-  const healthyProviders = providerHealth?.providers.filter((provider) => provider.status === "ok").length ?? 0;
-  const decisionWorkers = decisionHealth?.workers ?? [];
-  const evaluated = decisionWorkers.reduce((total, worker) => total + worker.window.signals_evaluated, 0);
-  const fills = decisionWorkers.reduce((total, worker) => total + worker.window.paper_orders_filled, 0);
+  const healthyProviders = providerHealth?.providers.filter((provider: any) => provider.status === "ok").length ?? 0;
+  const evaluated = decisionWorkers.reduce((total: number, worker: any) => total + worker.window.signals_evaluated, 0);
+  const fills = decisionWorkers.reduce((total: number, worker: any) => total + worker.window.paper_orders_filled, 0);
   const apiState = refreshAgeMs !== null && refreshAgeMs <= SESSION_POLL_INTERVAL_MS * 3 ? "Connected" : "Refresh delayed";
   const isTestnet = binanceTestnetStatus?.ok && binanceTestnetStatus?.configured;
   const execLabel = isTestnet ? "BINANCE TESTNET" : "PAPER";
@@ -334,7 +372,7 @@ const OperationsSummary: React.FC<{
       </div>
       <dl className="grid divide-y divide-gray-800 sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-5">
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Execution</dt><dd className={cn("mt-1 text-sm font-semibold", execColor)}>{execLabel}</dd></div>
-        <div className="px-4 py-3"><dt className="text-xs text-gray-500">Workers fresh</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{sessions === null ? "Checking…" : `${freshWorkers}/${workers.length}`}</dd></div>
+        <div className="px-4 py-3"><dt className="text-xs text-gray-500">Workers fresh</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{decisionHealth === null ? "Checking…" : decisionHealth.status === "error" ? "DB unreachable" : `${freshWorkers}/${decisionWorkers.length}`}</dd></div>
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Market providers</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{providerHealthError ? "Unavailable" : providerHealth ? `${healthyProviders}/${providerHealth.providers.length} reachable` : "Checking…"}</dd></div>
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Signals evaluated, 24h</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{decisionHealth ? Number(evaluated ?? 0).toLocaleString() : "Checking…"}</dd></div>
         <div className="px-4 py-3"><dt className="text-xs text-gray-500">Paper fills, 24h</dt><dd className="mt-1 text-sm font-semibold text-gray-100">{decisionHealth ? Number(fills ?? 0).toLocaleString() : "Checking…"}</dd></div>
@@ -355,7 +393,7 @@ const ProviderHealthBar: React.FC<{
     <section className="mb-5 border-y border-gray-800 bg-gray-900/35 px-3 py-2.5" aria-label="Market provider health">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
         <span className="font-semibold uppercase tracking-wider text-gray-400">Provider health</span>
-        {(health?.providers ?? []).map((provider) => {
+        {(health?.providers ?? []).map((provider: any) => {
           const isHealthy = provider.status === "ok";
           const isActive = provider.provider === active;
           return (
@@ -399,18 +437,6 @@ const StatCard: React.FC<{
     </div>
   </div>
 );
-
-const SideBadge: React.FC<{ side: "LONG" | "SHORT" }> = ({ side }) => {
-  const isLong = side === "LONG";
-  return (
-    <span className={cn(
-      "inline-flex items-center rounded px-2.5 py-0.5 text-xs font-bold",
-      isLong ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400",
-    )}>
-      {side}
-    </span>
-  );
-};
 
 const DonutChart: React.FC<{ data: MarginAlloc[]; total: string }> = ({ data, total }) => {
   const radius = 70;
@@ -662,8 +688,8 @@ export function computeRiskAdjustedMetrics(s: PaperSessionSummary): RiskAdjusted
 
   // Derive dynamically from equity curve points
   const points = (s.equity_curve ?? [])
-    .map((p) => finiteNumber(p.equity))
-    .filter((e): e is number => e !== null);
+    .map((p: any) => finiteNumber(p.equity))
+    .filter((e: number | null): e is number => e !== null);
 
   if (points.length < 3) {
     return {
@@ -945,7 +971,7 @@ const RiskAdjustedSection: React.FC<{
 function buildPositions(s: PaperSessionSummary, nowMs: number): Position[] {
   const latest = s.latest_mark;
   const positionMeta = s.book?.position_metadata ?? {};
-  const futuresMarkBySymbol = new Map((latest?.open_positions ?? []).map((p) => [p.symbol, p]));
+  const futuresMarkBySymbol = new Map<string, any>((latest?.open_positions ?? []).map((p: any) => [p.symbol, p]));
   const symbols = Array.from(new Set([
     ...(s.session?.symbols ?? []),
     ...Object.keys(s.book?.positions ?? {}),
@@ -1055,10 +1081,10 @@ function buildMarginAlloc(s: PaperSessionSummary): { slices: MarginAlloc[]; tota
   // "No leveraged positions are currently open" directly above a table listing
   // three open leveraged positions. One source, one answer.
   const futuresRows = (s.latest_mark?.open_positions ?? []).filter(
-    (p) => p.leverage > 1 && p.isolated_margin > 0,
+    (p: any) => p.leverage > 1 && p.isolated_margin > 0,
   );
 
-  let entries: Array<{ symbol: string; margin: number }> = futuresRows.map((p) => ({
+  let entries: Array<{ symbol: string; margin: number }> = futuresRows.map((p: any) => ({
     symbol: p.symbol,
     margin: p.isolated_margin,
   }));
@@ -1066,7 +1092,7 @@ function buildMarginAlloc(s: PaperSessionSummary): { slices: MarginAlloc[]; tota
   // Spot/legacy sessions carry margin only in position_metadata; fall back to it
   // when there are no futures rows rather than showing an empty chart.
   if (entries.length === 0) {
-    const positionMeta = s.book?.position_metadata ?? {};
+    const positionMeta: Record<string, any> = s.book?.position_metadata ?? {};
     const bookQty = s.book?.positions ?? {};
     entries = Object.entries(positionMeta)
       .filter(([sym, m]) => Math.abs(bookQty[sym] ?? 0) >= 1e-9 && m.leverage > 1 && m.margin > 0)
@@ -1191,7 +1217,7 @@ const WorkerCard: React.FC<{
 
       <div className="flex items-center justify-between text-xs text-gray-500">
         <span className="inline-flex items-center gap-1.5">
-          Feed <MarketSourceBadge source={market.source} rawSource={market.rawSource} status={market.status} />
+          Feed <MarketSourceBadge source={market.source} rawSource={market.rawSource} status={market.status} isTestnet={market.isTestnet} />
         </span>
         <span className={market.status === "OK" ? "text-emerald-400" : market.status === "STALE" ? "text-amber-400" : "text-red-400"}>
           {market.status}
@@ -1364,7 +1390,7 @@ export function PaperTrading() {
   }, []);
 
   const decisionByWorker = useMemo(
-    () => new Map((decisionHealth?.workers ?? []).map((worker) => [worker.worker_id, worker])),
+    () => new Map<string, any>((decisionHealth?.workers ?? []).map((worker: any) => [worker.worker_id, worker])),
     [decisionHealth],
   );
 
@@ -1493,7 +1519,6 @@ export function PaperTrading() {
           onSelect={(w) => { userPickedTabRef.current = true; setActiveTab(classifySessionTab(w)); setSelectedSessionId(w.session_id); }}
         />
         <OperationsSummary
-          sessions={sessions}
           providerHealth={providerHealth}
           providerHealthError={providerHealthError}
           decisionHealth={decisionHealth}
@@ -1599,10 +1624,10 @@ export function PaperTrading() {
   ];
 
   const curveRows = (s.equity_curve ?? [])
-    .map((point) => ({ equity: finiteNumber(point.equity), time: point.time }))
-    .filter((point): point is { equity: number; time: string } => point.equity !== null);
-  const curvePoints = curveRows.map((point) => point.equity);
-  const curveLabelsRaw = curveRows.map((point) => point.time);
+    .map((point: any) => ({ equity: finiteNumber(point.equity), time: point.time }))
+    .filter((point: { equity: number | null; time: string }): point is { equity: number; time: string } => point.equity !== null);
+  const curvePoints = curveRows.map((point: any) => point.equity);
+  const curveLabelsRaw = curveRows.map((point: any) => point.time);
   const curveLabels = curveLabelsRaw.length
     ? [0, 0.33, 0.66, 1].map((fraction) => {
       const idx = Math.min(curveLabelsRaw.length - 1, Math.round(fraction * (curveLabelsRaw.length - 1)));
@@ -1630,7 +1655,6 @@ export function PaperTrading() {
       />
       <NeonDbStatusCard onSynced={load} />
       <OperationsSummary
-        sessions={sessions}
         providerHealth={providerHealth}
         providerHealthError={providerHealthError}
         decisionHealth={decisionHealth}
@@ -1782,7 +1806,7 @@ export function PaperTrading() {
             {account && <span className="text-blue-400">Leverage: {account.leverage}x</span>}
             {account && <span className={account.ledger_status === "OK" ? "text-emerald-400" : "text-red-400"}>Ledger: {account.ledger_status}</span>}
             <span className="inline-flex items-center gap-1.5 text-gray-500">
-              Market source <MarketSourceBadge source={market.source} rawSource={market.rawSource} status={market.status} />
+              Market source <MarketSourceBadge source={market.source} rawSource={market.rawSource} status={market.status} isTestnet={market.isTestnet} />
               <span className={market.status === "OK" ? "text-emerald-400" : market.status === "STALE" ? "text-amber-400" : "text-red-400"}>{market.status}</span>
             </span>
             <span className="text-gray-500">
@@ -1871,6 +1895,8 @@ export function PaperTrading() {
           strategyId={account?.strategy_id ?? s.session.strategy_id ?? undefined}
           winRate={overall?.win_rate}
           profitFactor={overall?.profit_factor}
+          sharpeRating={currentRiskMetrics.sharpeRating}
+          sharpeColor={currentRiskMetrics.sharpeColor}
         />
       </div>
 

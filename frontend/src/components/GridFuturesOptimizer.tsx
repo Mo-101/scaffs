@@ -194,7 +194,7 @@ export const GridFuturesOptimizer: React.FC<GridFuturesOptimizerProps> = ({ sess
         {/* Visual Ladder Rungs */}
         <div className="space-y-1.5 font-mono text-xs max-h-56 overflow-y-auto pr-1">
           {/* Asks (Short Trigger Rungs) */}
-          {asks.slice(0, 4).reverse().map((ask, i) => (
+          {asks.slice(0, 4).reverse().map((ask: any, i: number) => (
             <div key={`ask_${i}`} className="flex items-center justify-between rounded bg-red-950/20 border border-red-900/30 px-3 py-1 text-red-300">
               <span className="flex items-center gap-1 font-sans text-[11px] text-red-400 font-semibold">
                 <ArrowUp className="h-3 w-3" /> SHORT TRIGGER RUNG #{asks.length - i}
@@ -220,7 +220,7 @@ export const GridFuturesOptimizer: React.FC<GridFuturesOptimizerProps> = ({ sess
           </div>
 
           {/* Bids (Long Trigger Rungs) */}
-          {bids.slice(0, 4).map((bid, i) => (
+          {bids.slice(0, 4).map((bid: any, i: number) => (
             <div key={`bid_${i}`} className="flex items-center justify-between rounded bg-emerald-950/20 border border-emerald-900/30 px-3 py-1 text-emerald-300">
               <span className="flex items-center gap-1 font-sans text-[11px] text-emerald-400 font-semibold">
                 <ArrowDown className="h-3 w-3" /> LONG TRIGGER RUNG #{i + 1}

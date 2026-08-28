@@ -219,7 +219,7 @@ export const MandateProposalCard = memo(function MandateProposalCard({ proposal,
 
   // Collapsed state: a compact active-mandate badge (same visual family as the goal badge).
   if (committed) {
-    const profile = proposal.profiles.find((p) => p.ordinal === committed.selected_ordinal);
+    const profile = proposal.profiles.find((p: any) => p.ordinal === committed.selected_ordinal);
     const maxOrder = committed.max_order_usd ?? profile?.max_order_usd;
     const dailyCap = committed.daily_trade_cap ?? profile?.daily_trade_cap;
     const expires = committed.expires_at ? new Date(committed.expires_at) : null;
@@ -275,7 +275,7 @@ export const MandateProposalCard = memo(function MandateProposalCard({ proposal,
         </div>
 
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {proposal.profiles.map((profile) => (
+          {proposal.profiles.map((profile: any) => (
             <ProfileTile
               key={profile.ordinal}
               profile={profile}

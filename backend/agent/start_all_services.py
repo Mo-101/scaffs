@@ -147,6 +147,31 @@ def run_session_worker(session_name: str, is_funding: bool = False, poll_interva
         time.sleep(poll_interval_sec)
 
 
+def run_signal_queue_reconciler(poll_interval_sec: int = 10) -> None:
+    """Background loop: fill-detect resting LIMIT entries placed via
+    signal_queue.py's dispatch_queued_signal, attach protection on first
+    confirmed fill (sized to whatever actually filled), and cancel entries
+    whose TTL elapsed unfilled.
+
+    This is the ONLY thing that revisits an order after dispatch_queued_signal
+    returns -- without it, an entry that doesn't fill within
+    BinanceTestnetExecutor._submit_real's ~1-second confirm window is never
+    protected and never cancelled. Load-bearing correctness, not optional.
+    """
+    from src.trading.signal_queue import SignalQueueManager
+
+    logger.info("Signal-queue reconciler started (interval=%ds)", poll_interval_sec)
+    mgr = SignalQueueManager()
+    while True:
+        try:
+            result = mgr.reconcile_pending_entries()
+            if result.get("processed"):
+                logger.info("Signal-queue reconciler processed: %s", result["processed"])
+        except Exception:
+            logger.exception("Signal-queue reconciler tick failed")
+        time.sleep(poll_interval_sec)
+
+
 def main() -> None:
     initialize_all_sessions()
 
@@ -169,6 +194,24 @@ def main() -> None:
         t.start()
         threads.append(t)
         time.sleep(0.5)
+
+    reconciler_enabled = os.getenv("SIGNAL_QUEUE_RECONCILER_ENABLED", "true").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if reconciler_enabled:
+        reconciler_thread = threading.Thread(
+            target=run_signal_queue_reconciler,
+            name="Worker-signal-queue-reconciler",
+            daemon=True,
+        )
+        reconciler_thread.start()
+        threads.append(reconciler_thread)
+    else:
+        logger.warning(
+            "SIGNAL_QUEUE_RECONCILER_ENABLED=false: resting LIMIT entries will NOT be "
+            "fill-detected, protected, or TTL-cancelled after dispatch. Do not disable "
+            "this in a live/testnet environment."
+        )
 
     logger.info("All %d paper trading worker services are live and running!", len(threads))
 

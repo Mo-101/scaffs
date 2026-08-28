@@ -213,7 +213,7 @@ function ReportRow({ run }: { run: RunListItem }) {
           </div>
           <p className="line-clamp-2 text-sm text-muted-foreground">{run.prompt || t("reports.noPrompt")}</p>
           <div className="flex flex-wrap gap-1.5">
-            {(run.codes || []).slice(0, 6).map((code) => (
+            {(run.codes || []).slice(0, 6).map((code: any) => (
               <span key={code} className="rounded border px-2 py-0.5 font-mono text-xs text-muted-foreground">
                 {code}
               </span>

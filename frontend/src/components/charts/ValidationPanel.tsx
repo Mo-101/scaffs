@@ -134,7 +134,7 @@ function WalkForwardSection({ wf }: { wf: NonNullable<ValidationData["walk_forwa
           </tr>
         </thead>
         <tbody>
-          {wf.windows.map((w) => (
+          {wf.windows.map((w: any) => (
             <tr key={w.window} className="border-b last:border-0">
               <td className="py-1.5 pr-3 font-mono">{w.window}</td>
               <td className="py-1.5 pr-3 font-mono text-muted-foreground">{w.start} ~ {w.end}</td>

@@ -282,8 +282,8 @@ export const RunnerStatus = memo(function RunnerStatus({ status, unavailable, ha
   if (!status || status.brokers.length === 0) return null;
 
   const isHalted = halted ?? status.global_halted;
-  const anyRunning = status.brokers.some((b) => b.runner?.alive);
-  const authorizedCount = status.brokers.filter((b) => b.auth.oauth_token_present).length;
+  const anyRunning = status.brokers.some((b: any) => b.runner?.alive);
+  const authorizedCount = status.brokers.filter((b: any) => b.auth.oauth_token_present).length;
 
   return (
     <div className="grid gap-2">
@@ -316,7 +316,7 @@ export const RunnerStatus = memo(function RunnerStatus({ status, unavailable, ha
 
       {open && (
         <div className="glass-menu grid gap-2 rounded-xl border border-primary/20 p-3">
-          {status.brokers.map((broker) => (
+          {status.brokers.map((broker: any) => (
             <BrokerRow key={broker.auth.broker} broker={broker} halted={isHalted || broker.halted} onRefresh={onRefresh} />
           ))}
         </div>

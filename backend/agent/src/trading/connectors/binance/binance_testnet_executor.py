@@ -120,6 +120,71 @@ def _validate_tp_sl(side: str, mark: float, sl: float | None, tp: float | None) 
     return valid_sl, valid_tp, "VALID"
 
 
+def attach_protective_orders(
+    client: BinanceFuturesClient,
+    symbol: str,
+    side: str,
+    stop_loss: float | None,
+    take_profit: float | None,
+    mark_price: float,
+    intent_id: str,
+) -> tuple[list[dict[str, Any]], str, str | None]:
+    """Attach STOP_MARKET (SL) / TAKE_PROFIT_MARKET (TP) closePosition orders.
+
+    Shared by the immediate-fill path (BinanceTestnetExecutor._submit_real,
+    via its thin wrapper) and SignalQueueManager.reconcile_pending_entries
+    (the async poller that revisits a resting LIMIT order after the original
+    dispatch call already returned). closePosition orders don't take a
+    quantity -- Binance closes whatever is actually open -- so this is
+    correct whether the fill was full or partial.
+
+    Returns (orders, status, error):
+      - "NO_BOUNDARIES" if neither stop_loss nor take_profit was supplied
+        (grid/rebalance-style signals with no per-trade stop concept) -- a
+        no-op, not a failure.
+      - "PROTECTED" if every supplied boundary attached successfully.
+      - "PROTECTION_FAILED" if one or more failed.
+    """
+    if stop_loss is None and take_profit is None:
+        return [], "NO_BOUNDARIES", None
+
+    sl, tp, _ = _validate_tp_sl(side, mark_price, stop_loss, take_profit)
+
+    protective_orders: list[dict[str, Any]] = []
+    entry_side = side.upper()
+    exit_side = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
+    tick = client.get_price_tick_size(symbol)
+    base_cid = intent_id[:28]
+
+    def place_protective(order_type: str, stop_price: float, suffix: str) -> dict[str, Any]:
+        formatted = _round_to_tick(stop_price, tick)
+        cid = f"{base_cid}{suffix}"
+        return client.place_algo_order(
+            symbol=symbol,
+            side=exit_side,
+            order_type=order_type,
+            trigger_price=formatted,
+            close_position=True,
+            client_algo_id=cid,
+            intent_id=intent_id,
+        )
+
+    error_parts: list[str] = []
+    if sl is not None:
+        try:
+            protective_orders.append(place_protective("STOP_MARKET", sl, "_sl"))
+        except Exception as exc:
+            error_parts.append(f"SL failed: {exc}")
+    if tp is not None:
+        try:
+            protective_orders.append(place_protective("TAKE_PROFIT_MARKET", tp, "_tp"))
+        except Exception as exc:
+            error_parts.append(f"TP failed: {exc}")
+
+    status = "PROTECTED" if not error_parts else "PROTECTION_FAILED"
+    return protective_orders, status, "; ".join(error_parts) if error_parts else None
+
+
 class BinanceTestnetExecutor:
     """Adapter that turns a ``TradeIntent`` into a Binance Testnet order.
 
@@ -244,47 +309,21 @@ class BinanceTestnetExecutor:
     ) -> tuple[list[dict[str, Any]], str, str | None]:
         """Attach STOP_MARKET (SL) and TAKE_PROFIT_MARKET (TP) closePosition orders.
 
-        Returns (orders, status, error). status is "PROTECTED" if both attached,
-        "PROTECTION_FAILED" if one or more failed. Each order dict has the
-        Binance response and order_id.
+        Thin wrapper over the standalone `attach_protective_orders` (shared with
+        SignalQueueManager.reconcile_pending_entries, which has no
+        pre_trade_intent-shaped object to read from). No behavior change here.
         """
         sl = float(pre_trade_intent.stop_loss) if pre_trade_intent.stop_loss is not None else None
         tp = float(pre_trade_intent.take_profit) if pre_trade_intent.take_profit is not None else None
-        sl, tp, _ = _validate_tp_sl(pre_trade_intent.side, mark_price, sl, tp)
-
-        protective_orders: list[dict[str, Any]] = []
-        entry_side = pre_trade_intent.side.upper()
-        exit_side = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
-        tick = self.client.get_price_tick_size(pre_trade_intent.symbol)
-        base_cid = pre_trade_intent.intent_id[:28]
-
-        def place_protective(order_type: str, stop_price: float, suffix: str) -> dict[str, Any]:
-            formatted = _round_to_tick(stop_price, tick)
-            cid = f"{base_cid}{suffix}"
-            return self.client.place_algo_order(
-                symbol=pre_trade_intent.symbol,
-                side=exit_side,
-                order_type=order_type,
-                trigger_price=formatted,
-                close_position=True,
-                client_algo_id=cid,
-                intent_id=pre_trade_intent.intent_id,
-            )
-
-        error_parts: list[str] = []
-        if sl is not None:
-            try:
-                protective_orders.append(place_protective("STOP_MARKET", sl, "_sl"))
-            except Exception as exc:
-                error_parts.append(f"SL failed: {exc}")
-        if tp is not None:
-            try:
-                protective_orders.append(place_protective("TAKE_PROFIT_MARKET", tp, "_tp"))
-            except Exception as exc:
-                error_parts.append(f"TP failed: {exc}")
-
-        status = "PROTECTED" if not error_parts else "PROTECTION_FAILED"
-        return protective_orders, status, "; ".join(error_parts) if error_parts else None
+        return attach_protective_orders(
+            client=self.client,
+            symbol=pre_trade_intent.symbol,
+            side=pre_trade_intent.side,
+            stop_loss=sl,
+            take_profit=tp,
+            mark_price=mark_price,
+            intent_id=pre_trade_intent.intent_id,
+        )
 
     def _submit_real(
         self,
@@ -467,6 +506,12 @@ def submit_binance_testnet_intent(
         "volatility": float(intent.market_snapshot.get("volatility", 1.0)),
         "adx14": float(intent.market_snapshot.get("adx14", 30.0)),
         "reason": intent.reason,
+        # Previously silently dropped: a caller-supplied stop/target/entry
+        # price on the incoming intent would vanish here even though
+        # dispatch_queued_signal reads exactly these criteria keys.
+        "stop_loss": intent.stop_loss,
+        "take_profit": intent.take_profit,
+        "entry": intent.limit_price,
     }
 
     mgr = SignalQueueManager()

@@ -72,7 +72,7 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
     boll: calcBOLL(baseData.closes, 20, 2),
     macd: calcMACD(baseData.closes),
     rsi: calcRSI(baseData.closes),
-    kdj: calcKDJ(baseData.highs, baseData.lows, baseData.closes),
+    kdj: calcKDJ(baseData.highs.map((high, i) => ({ high, low: baseData.lows[i], close: baseData.closes[i] }))),
   }), [baseData]);
 
   // Memoize backend indicator series with Map lookup (O(1) instead of O(n) find)
@@ -132,7 +132,7 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
       const boll = indicatorCache.boll;
       overlaySeries.push(
         { name: "BOLL+", type: "line", data: boll.upper, xAxisIndex: 0, yAxisIndex: 0, symbol: "none", lineStyle: { color: t.bollColor, width: 0.8, type: "dashed" } },
-        { name: "BOLL", type: "line", data: boll.mid, xAxisIndex: 0, yAxisIndex: 0, symbol: "none", lineStyle: { color: t.bollColor, width: 1 } },
+        { name: "BOLL", type: "line", data: boll.ma, xAxisIndex: 0, yAxisIndex: 0, symbol: "none", lineStyle: { color: t.bollColor, width: 1 } },
         { name: "BOLL-", type: "line", data: boll.lower, xAxisIndex: 0, yAxisIndex: 0, symbol: "none", lineStyle: { color: t.bollColor, width: 0.8, type: "dashed" } },
       );
       legendNames.push("BOLL");
@@ -167,8 +167,8 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
       const m = indicatorCache.macd;
       subSeries = [
         { name: "DIF", type: "line", data: m.dif, xAxisIndex: 1, yAxisIndex: 1, symbol: "none", lineStyle: { width: 1, color: t.infoColor } },
-        { name: "DEA", type: "line", data: m.signal, xAxisIndex: 1, yAxisIndex: 1, symbol: "none", lineStyle: { width: 1, color: t.warningColor } },
-        { name: "MACD", type: "bar", data: m.histogram.map(v => ({ value: v ?? 0, itemStyle: { color: (v ?? 0) >= 0 ? t.upColor : t.downColor } })), xAxisIndex: 1, yAxisIndex: 1 },
+        { name: "DEA", type: "line", data: m.dea, xAxisIndex: 1, yAxisIndex: 1, symbol: "none", lineStyle: { width: 1, color: t.warningColor } },
+        { name: "MACD", type: "bar", data: m.macd.map((v: number) => ({ value: v ?? 0, itemStyle: { color: (v ?? 0) >= 0 ? t.upColor : t.downColor } })), xAxisIndex: 1, yAxisIndex: 1 },
       ];
       legendNames.push("DIF", "DEA", "MACD");
     } else if (sub === "rsi") {

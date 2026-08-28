@@ -161,7 +161,7 @@ export function Runtime() {
               </section>
             ) : (
               <section className="grid gap-4">
-                {status.brokers.map((broker) => (
+                {status.brokers.map((broker: any) => (
                   <BrokerRuntimeCard key={broker.auth.broker} broker={broker} globalHalted={status.global_halted} t={t} nowMs={nowMs} />
                 ))}
               </section>
@@ -331,8 +331,8 @@ function summarizeRuntime(status: LiveStatus | null) {
   const brokers = status?.brokers || [];
   return {
     brokerCount: brokers.length,
-    authorizedCount: brokers.filter((broker) => broker.auth.oauth_token_present).length,
-    runningCount: brokers.filter((broker) => broker.runner?.alive).length,
+    authorizedCount: brokers.filter((broker: any) => broker.auth.oauth_token_present).length,
+    runningCount: brokers.filter((broker: any) => broker.runner?.alive).length,
   };
 }
 

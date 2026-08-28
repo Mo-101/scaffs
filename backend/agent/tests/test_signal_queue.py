@@ -144,6 +144,8 @@ def test_enqueue_rejects_archive_before_live_queue_insert():
 
 def test_enqueue_and_pending_retrieval():
     """Verify database persistence, TTL, and pending queue retrieval."""
+    import uuid
+
     mgr = SignalQueueManager()
     res = mgr.enqueue_signal(
         symbol="HYPEUSDT",
@@ -151,7 +153,11 @@ def test_enqueue_and_pending_retrieval():
         producer="idim_ikang",
         timeframe="5m",
         raw_score=78.5,
-        source_signal_id="idim-live-hype-1",
+        # Unique per run: the active-signal uniqueness constraint added in
+        # migrations/010 rejects a second PENDING/CLAIMED row for the same
+        # source_signal_id, so a fixed literal here would only pass once
+        # against a persistent dev database.
+        source_signal_id=f"idim-live-hype-{uuid.uuid4()}",
         criteria_vector={"regime": "UPTREND", "adx14": 28.0},
         ttl_seconds=300,
     )

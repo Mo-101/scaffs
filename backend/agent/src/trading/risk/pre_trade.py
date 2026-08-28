@@ -36,6 +36,13 @@ class TradeIntent:
 class AccountSnapshot:
     available_balance_usdt: Decimal
     status: str = "OK"
+    # Optional: total wallet balance (equity), distinct from available/free
+    # margin. available_balance_usdt is a capital-sufficiency constraint (it
+    # shrinks as other isolated positions reserve margin); total_wallet_balance
+    # is the "risk-base" equity a risk_pct sizing formula should scale against,
+    # so opening one isolated position doesn't itself change what risk_pct
+    # nominally means for the next one. None when the caller hasn't fetched it.
+    total_wallet_balance_usdt: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

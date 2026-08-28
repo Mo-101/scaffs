@@ -93,8 +93,16 @@ class IdimFeedBridge:
         try:
             with psycopg.connect(self.dsn) as conn:
                 # Check active queue records to avoid re-enqueuing a signal that is still
-                # pending, dispatched or being processed. Expired/rejected/completed
-                # entries may be re-ingested so the feed stays visible on refresh.
+                # pending, claimed, resting as an unfilled/partially-filled LIMIT entry, or
+                # already fully executed. DISPATCHED, PARTIALLY_FILLED, and PROTECTED are
+                # deliberately NOT retry-eligible: real exchange exposure exists for that
+                # signal_id, so re-ingesting it could double-trade. ENTRY_CANCELLED_TTL IS
+                # retry-eligible (like EXPIRED) -- the entry never filled, no position
+                # exists, so nothing is lost by re-ingesting it. This in-memory check is a
+                # fast-path pre-filter only; the DB-level unique index
+                # (migrations/010_signal_queue_claim_and_provenance.sql,
+                # migrations/011_limit_entry_lifecycle.sql) is the authoritative defense
+                # against the TOCTOU race this check alone can't close.
                 existing_signal_ids = set()
                 try:
                     with conn.cursor() as cur:
@@ -103,7 +111,9 @@ class IdimFeedBridge:
                             SELECT source_signal_id
                             FROM paper_trading.signal_queue
                             WHERE source_signal_id IS NOT NULL
-                              AND status NOT IN ('EXPIRED','REJECTED','COMPLETED','CANCELLED','EXECUTION_FAILED','COLLISION_BLOCKED');
+                              AND status NOT IN ('EXPIRED','EXECUTION_FAILED','COLLISION_BLOCKED',
+                                                  'COLLISION_UNKNOWN','LEVERAGE_MISMATCH_BLOCKED',
+                                                  'MARGIN_MODE_MISMATCH_BLOCKED','ENTRY_CANCELLED_TTL');
                             """
                         )
                         for r in cur.fetchall():

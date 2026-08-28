@@ -25,7 +25,7 @@ FROM node:20-slim AS frontend
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci
-COPY frontend . .
+COPY frontend/ .
 RUN npm run build
 
 FROM python-base AS final

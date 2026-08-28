@@ -421,10 +421,10 @@ function BrowseView() {
                     </td>
                     <td className="px-4 py-2 text-xs">{a.zoo}</td>
                     <td className="px-4 py-2 text-xs text-muted-foreground">
-                      {(a.theme || []).map((t) => i18n.t("alphaZoo.themes." + t, { defaultValue: t })).join(", ") || "—"}
+                      {(a.theme || []).map((t: string) => i18n.t("alphaZoo.themes." + t, { defaultValue: t })).join(", ") || "—"}
                     </td>
                     <td className="px-4 py-2 text-xs text-muted-foreground hidden md:table-cell">
-                      {(a.universe || []).map((u) => i18n.t("alphaZoo.universeOption." + u, { defaultValue: u })).join(", ") || "—"}
+                      {(a.universe || []).map((u: string) => i18n.t("alphaZoo.universeOption." + u, { defaultValue: u })).join(", ") || "—"}
                     </td>
                     <td className="px-4 py-2 text-right font-mono tabular-nums text-xs">
                       {a.decay_horizon ?? "—"}
@@ -1051,7 +1051,7 @@ function TopTable({ title, rows }: { title: string; rows: AlphaBenchTopRow[] }) 
                 <td className="px-4 py-2 text-right font-mono tabular-nums text-xs">{fmtNum(r.ic_mean)}</td>
                 <td className="px-4 py-2 text-right font-mono tabular-nums text-xs">{fmtNum(r.ir)}</td>
                 <td className="px-4 py-2 text-xs text-muted-foreground">
-                  {(r.theme || []).map((t) => i18n.t("alphaZoo.themes." + t, { defaultValue: t })).join(", ") || "—"}
+                  {(r.theme || []).map((t: string) => i18n.t("alphaZoo.themes." + t, { defaultValue: t })).join(", ") || "—"}
                 </td>
                 <td className="px-4 py-2 text-xs">
                   <CategoryBadge category={r.category} />
@@ -1392,7 +1392,7 @@ function CompareResultPanel({ result }: { result: AlphaCompareResult }) {
               </tr>
             </thead>
             <tbody>
-              {result.ranking.map((r) => (
+              {result.ranking.map((r: any) => (
                 <tr
                   key={`${r.zoo}:${r.id}`}
                   className={cn(
@@ -1428,7 +1428,7 @@ function CompareResultPanel({ result }: { result: AlphaCompareResult }) {
       {result.skipped.length > 0 && (
         <p className="text-xs text-muted-foreground">
           <span className="font-medium">{i18n.t("alphaZoo.skippedPre")}</span>{" "}
-          {result.skipped.map((s) => `${s.id} (${s.reason})`).join("; ")}
+          {result.skipped.map((s: any) => `${s.id} (${s.reason})`).join("; ")}
         </p>
       )}
     </div>

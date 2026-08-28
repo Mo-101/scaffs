@@ -135,7 +135,7 @@ export const MorningGloryOptimizer: React.FC<MorningGloryOptimizerProps> = ({ se
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800/60 font-mono">
-            {anomalies.map((item, idx) => {
+            {anomalies.map((item: any, idx: number) => {
               const isExtremePos = item.zscore > 2.0;
               const isExtremeNeg = item.zscore < -2.0;
 

@@ -24,7 +24,12 @@ class BinanceTestnetStateProvider:
     def account_snapshot(self) -> AccountSnapshot:
         info = self.client.get_account_information()
         available = Decimal(str(info.get("availableBalance", 0.0)))
-        return AccountSnapshot(available_balance_usdt=available, status="OK")
+        wallet_balance = Decimal(str(info.get("totalWalletBalance", 0.0)))
+        return AccountSnapshot(
+            available_balance_usdt=available,
+            status="OK",
+            total_wallet_balance_usdt=wallet_balance,
+        )
 
     def positions(self) -> tuple[str, Sequence[PositionSnapshot]]:
         raw_positions = self.client.get_positions()

@@ -150,7 +150,7 @@ export function Settings() {
 
   const providers = settings?.providers ?? [];
   const selectedProvider = useMemo<LLMProviderOption | undefined>(
-    () => providers.find((provider) => provider.name === form?.provider),
+    () => providers.find((provider: any) => provider.name === form?.provider),
     [form?.provider, providers],
   );
 
@@ -164,7 +164,7 @@ export function Settings() {
   };
 
   const onProviderChange = (name: string) => {
-    const provider = providers.find((item) => item.name === name);
+    const provider = providers.find((item: any) => item.name === name);
     if (!provider || !form) return;
     setForm({
       ...form,
@@ -314,7 +314,7 @@ export function Settings() {
         ? `This provider uses OAuth. Run: ${selectedProvider.login_command}`
         : "This provider does not require an API key.";
   const apiKeyDisabled = !selectedProvider?.api_key_required || clearApiKey;
-  const channelRows = channelStatus
+  const channelRows: [string, any][] = channelStatus
     ? Object.entries(channelStatus.channels ?? {}).sort(([a], [b]) => a.localeCompare(b))
     : [];
   const channelEnabledCount = channelRows.filter(([, item]) => item.enabled).length;
@@ -461,7 +461,7 @@ export function Settings() {
                 onChange={(event) => onProviderChange(event.target.value)}
                 className={selectFieldClass}
               >
-                {providers.map((provider) => (
+                {providers.map((provider: any) => (
                   <option key={provider.name} value={provider.name}>{provider.label}</option>
                 ))}
               </select>
@@ -963,7 +963,7 @@ export function Settings() {
                 <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs text-success font-medium">4 Providers Ready</span>
               </div>
               <div className="space-y-2.5 text-xs text-muted-foreground">
-                {(dataSettings.providers || []).map((p) => (
+                {(dataSettings.providers || []).map((p: any) => (
                   <div key={p.id} className="flex items-center justify-between rounded-lg border border-border/30 bg-background/50 p-2.5">
                     <div>
                       <div className="font-medium text-foreground">{p.name}</div>

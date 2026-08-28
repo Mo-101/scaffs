@@ -61,6 +61,15 @@ def aggregate_fills(
     rows: list[tuple] = []
     try:
         with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            # UNION ALL with live_fills: real live-testnet fills (written by
+            # SignalQueueManager.reconcile_pending_entries, see
+            # migrations/011_limit_entry_lifecycle.sql) live in a SEPARATE
+            # table from paper_trading.fills, since that table's account_id
+            # FK requires a mode='paper' trading_account and a real live
+            # fill doesn't belong there. Without this UNION, every live
+            # position would show confidence="NONE" here (no matching rows
+            # at all) and get quarantined by PositionRiskResolver regardless
+            # of how correct the actual fill was.
             cur.execute(
                 """
                 SELECT account_id, exchange_fill_id, exchange_order_id,
@@ -68,9 +77,15 @@ def aggregate_fills(
                 FROM paper_trading.fills
                 WHERE symbol = %s
                   AND side = ANY(%s::text[])
+                UNION ALL
+                SELECT NULL::uuid AS account_id, exchange_fill_id, exchange_order_id,
+                       side, quantity, price, fee, filled_at
+                FROM paper_trading.live_fills
+                WHERE symbol = %s
+                  AND side = ANY(%s::text[])
                 ORDER BY filled_at DESC;
                 """,
-                (norm_sym, variants),
+                (norm_sym, variants, norm_sym, variants),
             )
             rows = cur.fetchall()
     except Exception as exc:

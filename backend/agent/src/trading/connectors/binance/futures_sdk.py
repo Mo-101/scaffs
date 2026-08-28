@@ -414,6 +414,21 @@ class BinanceFuturesClient:
                 return int(r.get("leverage", 1))
         return 1
 
+    def get_symbol_margin_type(self, symbol: str) -> str:
+        """Return the currently configured margin mode for a symbol.
+
+        Defaults to "ISOLATED" when the symbol has no positionRisk entry yet
+        (e.g. never traded) -- ISOLATED is this account's required/expected
+        mode, so an absent entry means "nothing to violate it," not "assume
+        the worst."
+        """
+        params = {"symbol": symbol.upper().replace("-", "").replace("/", "")}
+        risks = self._request("GET", "/fapi/v2/positionRisk", params=params, signed=True)
+        for r in risks:
+            if r.get("symbol", "").upper() == params["symbol"].upper():
+                return str(r.get("marginType", "ISOLATED")).upper()
+        return "ISOLATED"
+
     def get_ticker_price(self, symbol: str) -> float:
         """Fetch current mark/ticker price for a symbol."""
         formatted_symbol = _format_symbol(symbol)

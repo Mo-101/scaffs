@@ -1,5 +1,18 @@
 // Auto-generated minimal API client stub
 
+import { getApiAuthKey } from "@/lib/apiAuth";
+
+// Native EventSource can't send an Authorization header, so these stream
+// endpoints accept the API key as a query param instead (see
+// require_event_stream_auth in api_server.py).
+function eventStreamUrl(path: string, params?: Record<string, string>): string {
+  const qs = new URLSearchParams(params);
+  const key = getApiAuthKey();
+  if (key) qs.set("api_key", key);
+  const query = qs.toString();
+  return `${path}${query ? `?${query}` : ""}`;
+}
+
 export type AlphaBenchResult = any;
 export type AlphaBenchTopRow = any;
 export type AlphaCompareResult = any;
@@ -13,6 +26,7 @@ export type DbStatusResponse = any;
 export type EquityPoint = any;
 export type GoalSnapshot = any;
 export type GridEngineState = any;
+export type IndicatorPoint = any;
 export type LLMProviderOption = any;
 export type LLMSettings = any;
 export type LiveAction = any;
@@ -30,19 +44,39 @@ export type PaperDecisionHealthWorker = any;
 export type PaperProviderHealth = any;
 export type PaperSessionSummary = any;
 export type PositionMetadata = any;
+export type PriceBar = any;
 export type RunCard = any;
 export type RunData = any;
 export type RunListItem = any;
 export type SessionItem = any;
+export type TradeMarker = any;
+export type ValidationData = any;
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.status = status;
+  }
+}
 export const AUTH_REQUIRED_MESSAGE = "Authentication required";
 export const isAuthRequiredError = (e: any): boolean => e instanceof ApiError || (e?.message ?? "").includes(AUTH_REQUIRED_MESSAGE);
 export const isFuturesClosedTrade = (t: any): boolean => !!(t && t.exit_price);
 
+async function errorMessageFrom(res: Response): Promise<string> {
+  try {
+    const data = await res.clone().json();
+    const msg = data?.message || data?.error || data?.detail;
+    if (typeof msg === "string" && msg) return msg;
+  } catch {
+    // response body wasn't JSON (or was empty) -- fall through to the status line
+  }
+  return `${res.status}: ${res.statusText}`;
+}
+
 async function get(path: string): Promise<any> {
   const res = await fetch(path);
-  if (!res.ok) throw new ApiError(`${res.status}: ${res.statusText}`);
+  if (!res.ok) throw new ApiError(await errorMessageFrom(res), res.status);
   return res.json();
 }
 
@@ -52,14 +86,18 @@ async function post(path: string, body?: any): Promise<any> {
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new ApiError(`${res.status}: ${res.statusText}`);
+  if (!res.ok) throw new ApiError(await errorMessageFrom(res), res.status);
   return res.json();
 }
 
 export const api = {
-  acceleratePaperTrades: async (payload?: any): Promise<any> => post("/paper-sessions/accelerate", payload),
-  alphaBenchStreamUrl: "",
-  alphaCompareStreamUrl: "",
+  // Demo-only: fast-forwards synthetic trades in the in-memory fixture. Has
+  // no real-engine equivalent, so this stays pointed at /demo/* explicitly
+  // rather than hitting the real engine's /paper-sessions/* (which would 404).
+  acceleratePaperTrades: async (sessionId?: string, count?: number): Promise<any> =>
+    post("/demo/paper-sessions/accelerate", { sessionId: sessionId || "all", count: count ?? 10 }),
+  alphaBenchStreamUrl: (jobId: string): string => eventStreamUrl(`/alpha/bench/${encodeURIComponent(jobId)}/stream`),
+  alphaCompareStreamUrl: (jobId: string): string => eventStreamUrl(`/alpha/compare/${encodeURIComponent(jobId)}/stream`),
   authorizeLive: async (..._args: any[]): Promise<any> => {},
   cancelSession: async (..._args: any[]): Promise<any> => {},
   commitMandate: async (..._args: any[]): Promise<any> => {},
@@ -67,6 +105,12 @@ export const api = {
   createAlphaCompare: async (..._args: any[]): Promise<any> => {},
   createGoal: async (..._args: any[]): Promise<any> => {},
   createSession: async (..._args: any[]): Promise<any> => {},
+  deleteSession: async (sessionId: string): Promise<any> => {
+    const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (!res.ok) throw new ApiError(await errorMessageFrom(res), res.status);
+    return res.json();
+  },
+  getAlpha: async (alphaId: string): Promise<any> => get(`/alpha/${encodeURIComponent(alphaId)}`),
   getBinanceTestnetStatus: async (): Promise<any> => get("/paper-sessions/binance-testnet/status"),
   getBinanceTestnetBalance: async (): Promise<any> => get("/paper-sessions/binance-testnet/balance"),
   getBinanceTestnetPositions: async (symbol?: string): Promise<any> =>
@@ -105,6 +149,15 @@ export const api = {
   getRunPine: async (..._args: any[]): Promise<any> => {},
   getSessionMessages: async (..._args: any[]): Promise<any> => {},
   haltLive: async (..._args: any[]): Promise<any> => {},
+  listAlphas: async (params: { zoo?: string; theme?: string; universe?: string; limit?: number } = {}): Promise<any> => {
+    const qs = new URLSearchParams();
+    if (params.zoo) qs.set("zoo", params.zoo);
+    if (params.theme) qs.set("theme", params.theme);
+    if (params.universe) qs.set("universe", params.universe);
+    if (params.limit) qs.set("limit", String(params.limit));
+    const query = qs.toString();
+    return get(`/alpha/list${query ? `?${query}` : ""}`);
+  },
   listAutopilotEvidenceRuns: async (..._args: any[]): Promise<any> => {},
   listPaperSessions: async (scope: string = "active"): Promise<any> =>
     get(`/paper-sessions?scope=${encodeURIComponent(scope)}`),
@@ -115,12 +168,15 @@ export const api = {
   runGovernedBacktest: async (..._args: any[]): Promise<any> => {},
   saveGridState: async (..._args: any[]): Promise<any> => {},
   sendMessage: async (..._args: any[]): Promise<any> => {},
-  sseUrl: "",
+  sseUrl: (sessionId: string, params?: Record<string, string>): string =>
+    eventStreamUrl(`/sessions/${encodeURIComponent(sessionId)}/events`, params),
   startChannels: async (): Promise<any> => post("/channels/start"),
   startLiveRunner: async (..._args: any[]): Promise<any> => {},
   stopChannels: async (): Promise<any> => post("/channels/stop"),
   stopLiveRunner: async (..._args: any[]): Promise<any> => {},
-  switchTestnet: async (payload?: any): Promise<any> => post("/paper-sessions/switch-testnet", payload),
+  // Demo-only: synthetic "100 verified trades" gate against the in-memory
+  // fixture's trade counts. No real-engine equivalent -- see acceleratePaperTrades.
+  switchTestnet: async (payload?: any): Promise<any> => post("/demo/paper-sessions/switch-testnet", payload),
   syncDb: async (): Promise<any> => post("/paper-sessions/db-sync"),
   triggerMorningGlory: async (..._args: any[]): Promise<any> => {},
   updateDataSourceSettings: async (payload: any): Promise<any> => {

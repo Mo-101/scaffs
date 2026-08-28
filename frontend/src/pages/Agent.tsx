@@ -88,7 +88,7 @@ function isGlobalLiveHalt(halt: LiveHalted | null): boolean {
 function haltScopeStillActive(halt: LiveHalted, status: LiveStatus): boolean {
   const broker = normalizeBrokerScope(halt.broker);
   if (!broker) return status.global_halted;
-  return status.global_halted || status.brokers.some((item) => (
+  return status.global_halted || status.brokers.some((item: any) => (
     normalizeBrokerScope(item.auth.broker) === broker && item.halted
   ));
 }
@@ -151,7 +151,7 @@ function getGoalProgress(snapshot: GoalSnapshot | null): {
   evidenceTotal: number;
 } {
   const total = snapshot?.criteria.length ?? 0;
-  const met = snapshot?.criteria.filter((item) => criterionCovered(snapshot, item)).length ?? 0;
+  const met = snapshot?.criteria.filter((item: any) => criterionCovered(snapshot, item)).length ?? 0;
   const evidenceTotal = snapshot?.evidence_count ?? 0;
   return {
     met,
@@ -175,7 +175,7 @@ function criterionIndexLabel(index: number): string {
 }
 
 function criterionEvidenceCount(snapshot: GoalSnapshot, criterionId: string): number {
-  return snapshot.evidence.filter((item) => item.criterion_id === criterionId).length;
+  return snapshot.evidence.filter((item: any) => item.criterion_id === criterionId).length;
 }
 
 function criterionCovered(snapshot: GoalSnapshot, criterion: GoalSnapshot["criteria"][number]): boolean {
@@ -199,8 +199,8 @@ function goalKickoffPrompt(objective: string): string {
 
 function goalContinuePrompt(snapshot: GoalSnapshot): string {
   const openCriteria = snapshot.criteria
-    .filter((item) => item.required && !criterionCovered(snapshot, item))
-    .map((item) => `- ${item.text}`)
+    .filter((item: any) => item.required && !criterionCovered(snapshot, item))
+    .map((item: any) => `- ${item.text}`)
     .join("\n");
   return [
     "Continue the active research goal.",
@@ -379,12 +379,14 @@ export function Agent() {
             // Fetch run data to check report-worthiness; show fallback card if fetch fails
             let fetchedMetrics: Record<string, number> | undefined;
             let fetchedCurve: Array<{ time: string; equity: number }> | undefined;
+            let fetchedProvenance: AgentMessage["provenance"] | undefined;
             let showCard = false;
             try {
               const runData = await api.getRun(runId);
               if (isReportWorthyRun(runData)) {
                 fetchedMetrics = runData.metrics;
-                fetchedCurve = runData.equity_curve?.map((e) => ({ time: e.time, equity: Number(e.equity) }));
+                fetchedCurve = runData.equity_curve?.map((e: any) => ({ time: e.time, equity: Number(e.equity) }));
+                fetchedProvenance = runData.provenance;
                 showCard = true;
               }
               // succeeded but not report-worthy (plain chat turn) → skip card
@@ -400,7 +402,7 @@ export function Agent() {
                 runId,
                 metrics: fetchedMetrics,
                 equityCurve: fetchedCurve,
-                provenance: (runData as any)?.provenance as AgentMessage["provenance"] || "synthetic_research",
+                provenance: fetchedProvenance || "synthetic_research",
                 timestamp: ts + 1,
               });
             }
@@ -431,7 +433,7 @@ export function Agent() {
       try {
         const storedMessages = await api.getSessionMessages(sid);
         const completed = storedMessages.some(
-          (message) => message.role === "assistant" && message.linked_attempt_id === attemptId,
+          (message: any) => message.role === "assistant" && message.linked_attempt_id === attemptId,
         );
         if (completed) {
           if (act().sessionId !== sid) return true;
@@ -604,7 +606,7 @@ export function Agent() {
             const runData = await api.getRun(runId);
             if (isReportWorthyRun(runData)) {
               runMetrics = runData.metrics;
-              runCurve = runData.equity_curve?.map(e => ({ time: e.time, equity: Number(e.equity) }));
+              runCurve = runData.equity_curve?.map((e: any) => ({ time: e.time, equity: Number(e.equity) }));
               showCard = true;
             }
           } catch {
@@ -805,7 +807,7 @@ export function Agent() {
     try {
       const next = await api.getLiveStatus();
       setLiveStatus(next);
-      setLiveHalted((current) => (
+      setLiveHalted((current: any) => (
         current && !haltScopeStillActive(current, next) ? null : current
       ));
       setLiveStatusUnavailable(false);
@@ -920,7 +922,7 @@ export function Agent() {
       let sid = act().sessionId;
       if (!sid) {
         const session = await api.createSession(prompt.slice(0, 50));
-        sid = session.session_id;
+        sid = session.session_id as string;
         act().setSessionId(sid);
         setSearchParams({ session: sid }, { replace: true });
       }
@@ -960,7 +962,7 @@ export function Agent() {
         const runData = await api.getRun(result.run_id);
         if (isReportWorthyRun(runData)) {
           runMetrics = runData.metrics;
-          runCurve = runData.equity_curve?.map(e => ({ time: e.time, equity: Number(e.equity) }));
+          runCurve = runData.equity_curve?.map((e: any) => ({ time: e.time, equity: Number(e.equity) }));
         }
       } catch { /* fall back to the bare run_id link below */ }
       act().addMessage({
@@ -984,7 +986,7 @@ export function Agent() {
     let sid = act().sessionId;
     if (sid) return sid;
     const session = await api.createSession(title.slice(0, 50));
-    sid = session.session_id;
+    sid = session.session_id as string;
     pendingGoalSessionRef.current = sid;
     act().setSessionId(sid);
     setSearchParams({ session: sid }, { replace: true });
@@ -1023,7 +1025,7 @@ export function Agent() {
       // Preemptive halt: the server trips the kill switch (cancel resting orders +
       // optional flatten per SPEC §7.5 #6) and broadcasts live.halted. Reflect
       // optimistically and re-poll the runtime panel so the runner shows stopped.
-      setLiveHalted((cur) => cur ?? { broker: null, by: "frontend", tripped_at: new Date().toISOString() });
+      setLiveHalted((cur: any) => cur ?? { broker: null, by: "frontend", tripped_at: new Date().toISOString() });
       setLiveStatusRefresh((n) => n + 1);
       toast.success(t('agent.connectorHalted'));
     } catch (error) {
@@ -1209,7 +1211,7 @@ export function Agent() {
   const liveStatusActive =
     liveStatus != null &&
     (liveStatus.global_halted ||
-      liveStatus.brokers.some((b) => b.auth.oauth_token_present || b.runner?.alive || b.mandate != null));
+      liveStatus.brokers.some((b: any) => b.auth.oauth_token_present || b.runner?.alive || b.mandate != null));
   const liveActive =
     liveItems.length > 0 ||
     Object.keys(committedMandates).length > 0 ||
@@ -1448,7 +1450,7 @@ export function Agent() {
                     </div>
                   </div>
                   <div className="grid gap-1.5">
-                    {goalSnapshot.criteria.map((criterion, index) => {
+                    {goalSnapshot.criteria.map((criterion: any, index: number) => {
                       const evidenceCount = criterionEvidenceCount(goalSnapshot, criterion.criterion_id);
                       const displayStatus = criterionCovered(goalSnapshot, criterion) && !isCriterionStatusMet(criterion.status)
                         ? "covered"

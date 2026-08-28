@@ -33,6 +33,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -1441,17 +1442,40 @@ def register_paper_session_routes(
     async def place_binance_testnet_order(payload: dict[str, Any] = Body(...)):
         """Place an order on the Binance Futures Testnet matching engine.
 
-        Governance chain, in order, all fail-CLOSED:
-          1. leverage/margin mutations rejected (use configure-account)
+        This is a thin adapter into SignalQueueManager.enqueue_signal() +
+        dispatch_queued_signal() -- the SAME pipeline the signal queue's
+        /signal-queue/dispatch endpoint uses. It is deliberately NOT a second,
+        independent path to client.place_order(): a real bug this session
+        (this endpoint opened testnet positions under CROSS margin with zero
+        verification, while the signal-queue path correctly enforced ISOLATED)
+        happened exactly because there were two places that could reach the
+        exchange and only one of them got the check. Routing through the same
+        gateway makes that class of bug structurally impossible going
+        forward: claim/CAS, position-collision check, risk_pct ceiling,
+        ISOLATED margin, leverage, the Step 4 risk gate, LIMIT-only entry,
+        TTL-cancel, and poller-driven fill/partial-fill protection all apply
+        here for free, with no separate implementation to keep in sync.
+
+        Outer governance chain, in order, all fail-CLOSED, BEFORE the queue
+        pipeline is ever touched (fast, cheap, no DB/exchange interaction for
+        a malformed request):
+          1. leverage/margin mutations rejected (use configure-account) --
+             deliberately unchanged: there is no strategy-derived leverage
+             target to reconcile a caller-supplied value against here.
           2. TRADING_MODE must be testnet/sandbox/paper
           3. quantity must parse and be positive
-          4. a reference price MUST be obtainable -- no price, no order
-          5. notional must sit under min(HARD_CAP_MAX_ORDER_USD, MAX_POSITION_USD)
+          4. order_type must be LIMIT -- every entry in this system is a
+             resting LIMIT order now; silently converting a caller's
+             MARKET request would violate their expectation of immediate
+             execution.
+          5. a reference price MUST be obtainable -- no price, no order
+          6. notional must sit under min(HARD_CAP_MAX_ORDER_USD, MAX_POSITION_USD)
         """
         from src.trading.connectors.binance.futures_sdk import (
             get_binance_futures_client,
             BinanceConfig,
         )
+        from src.trading.signal_queue import SignalQueueManager
 
         if "leverage" in payload or "margin_type" in payload:
             raise HTTPException(
@@ -1475,7 +1499,11 @@ def register_paper_session_routes(
                 detail=f"This endpoint only accepts Binance testnet mode, current mode is '{binance_cfg.mode}'.",
             )
 
-        # Optional worker/strategy binding for signals routed through the queue.
+        # Optional worker/strategy binding, audit-only today: enqueue_signal
+        # has no parameter to force target_strategy -- route_signal always
+        # computes it from criteria -- so this check validates a value that
+        # doesn't actually constrain routing. Kept as-is; not fixing that
+        # routing gap here.
         worker_id = payload.get("worker_id") or payload.get("target_strategy")
         if worker_id:
             from src.trading.strategy_binding import is_allowed_worker
@@ -1488,14 +1516,12 @@ def register_paper_session_routes(
         client = get_binance_futures_client()
         symbol = payload.get("symbol")
         side = payload.get("side")
-        order_type = str(payload.get("order_type", "MARKET")).upper()
+        order_type = str(payload.get("order_type", "LIMIT")).upper()
         quantity = payload.get("quantity")
         price = payload.get("price")
         client_order_id = payload.get("client_order_id")
         intent_id = payload.get("intent_id")
         signal_id = payload.get("signal_id")
-        session_id = payload.get("session_id")
-        cycle_seq = payload.get("cycle_seq")
 
         if not symbol or not side or quantity is None:
             raise HTTPException(status_code=400, detail="symbol, side, and quantity are required")
@@ -1506,6 +1532,15 @@ def register_paper_session_routes(
             raise HTTPException(status_code=400, detail=f"Invalid quantity: {exc}") from exc
         if qty_float <= 0:
             raise HTTPException(status_code=400, detail="Invalid quantity: must be positive")
+
+        if order_type != "LIMIT":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"order_type={order_type!r} not supported; every entry is a resting "
+                    "LIMIT order. Omit order_type or pass 'LIMIT'."
+                ),
+            )
 
         limit_price: Optional[float] = None
         if price is not None:
@@ -1555,42 +1590,77 @@ def register_paper_session_routes(
                 ),
             )
 
+        governance = {
+            "reference_price": reference_price,
+            "order_notional_usd": round(order_notional, 8),
+            "effective_limit_usd": effective_limit,
+            "hard_cap_usd": HARD_CAP_MAX_ORDER_USD,
+            "trading_mode": binance_cfg.mode,
+        }
+
         logger.info(
-            "dispatching testnet order symbol=%s side=%s type=%s qty=%s notional=%.2f "
+            "manual testnet order -> signal queue symbol=%s side=%s qty=%s notional=%.2f "
             "limit=%.2f intent_id=%s signal_id=%s",
-            symbol, side, order_type, qty_float, order_notional, effective_limit,
-            intent_id, signal_id,
+            symbol, side, qty_float, order_notional, effective_limit, intent_id, signal_id,
         )
 
-        try:
-            order_res = await run_in_threadpool(
-                client.place_order,
-                symbol=symbol,
-                side=side,
-                order_type=order_type,
-                quantity=qty_float,
-                price=limit_price,
-                client_order_id=client_order_id,
-                intent_id=intent_id,
-                signal_id=signal_id,
-                session_id=session_id,
-                cycle_seq=cycle_seq,
-            )
-        except Exception as exc:
-            logger.error("testnet order execution error symbol=%s: %s", symbol, exc)
-            raise HTTPException(status_code=502, detail=f"Binance Testnet order execution error: {exc}") from exc
+        # requested_leverage is read, not set: this endpoint has no
+        # strategy-derived leverage target the way signal-queue strategies do
+        # (_target_leverage), and the leverage/margin_type payload rejection
+        # above means this is the only lever this endpoint has -- reading the
+        # current confirmed leverage makes dispatch_queued_signal's leverage
+        # check a real confirmation-of-status-quo (fails closed if it changes
+        # between this read and the set/verify inside dispatch) rather than
+        # silently trusting whatever's configured, which is strictly better
+        # than no verification at all.
+        requested_leverage = await run_in_threadpool(client.get_symbol_leverage, symbol)
 
-        return {
-            "ok": True,
-            "order": order_res,
-            "governance": {
-                "reference_price": reference_price,
-                "order_notional_usd": round(order_notional, 8),
-                "effective_limit_usd": effective_limit,
-                "hard_cap_usd": HARD_CAP_MAX_ORDER_USD,
-                "trading_mode": trading_mode,
-            },
+        source_signal_id = (
+            payload.get("source_signal_id") or intent_id or signal_id or client_order_id
+            or f"manual-{uuid.uuid4()}"
+        )
+        criteria_vector = {
+            "regime": "MANUAL",
+            "requested_leverage": requested_leverage,
+            "entry": limit_price,
+            "stop_loss": payload.get("stop_loss"),
+            "take_profit": payload.get("take_profit"),
         }
+
+        mgr = SignalQueueManager()
+        enq = await run_in_threadpool(
+            mgr.enqueue_signal,
+            symbol=symbol,
+            side=side,
+            producer="scaffs_manual",
+            timeframe=payload.get("timeframe", "5m"),
+            raw_score=float(payload.get("raw_score", 100.0)),
+            source_signal_id=source_signal_id,
+            criteria_vector=criteria_vector,
+            ttl_seconds=int(payload.get("ttl_seconds", 600)),
+        )
+        if not enq.get("ok"):
+            enq["governance"] = governance
+            return enq
+
+        # Pass notional_usd derived from THIS order's own quantity/price, not
+        # dispatch_queued_signal's 100.0 default -- otherwise its coarse-step
+        # notional-band check would compare a caller-supplied quantity against
+        # an unrelated $100 target and spuriously reject a valid manual order.
+        result = await run_in_threadpool(
+            mgr.dispatch_queued_signal,
+            enq["id"],
+            quantity=qty_float,
+            notional_usd=order_notional,
+        )
+        result["governance"] = governance
+        if result.get("status") in ("DISPATCHED", "PARTIALLY_FILLED"):
+            result["next_step"] = (
+                "Entry order placed as a resting LIMIT order; not yet confirmed filled. "
+                "Poll GET /paper-sessions/signal-queue/{queue_id} for the eventual "
+                "PROTECTED / PARTIALLY_FILLED / PROTECTION_FAILED / ENTRY_CANCELLED_TTL outcome."
+            )
+        return result
 
     @app.post("/paper-sessions/switch-testnet", dependencies=auth_dependencies)
     async def switch_testnet_mode(payload: dict[str, Any] = Body(default={})):
@@ -1667,6 +1737,7 @@ def register_paper_session_routes(
             raise HTTPException(status_code=400, detail=f"Invalid ttl_seconds: {exc}") from exc
         if ttl <= 0:
             raise HTTPException(status_code=400, detail="ttl_seconds must be positive")
+        signal_timestamp = payload.get("signal_timestamp")
 
         mgr = SignalQueueManager()
         res = await run_in_threadpool(
@@ -1679,6 +1750,7 @@ def register_paper_session_routes(
             source_signal_id=source_signal_id,
             criteria_vector=criteria,
             ttl_seconds=ttl,
+            signal_timestamp=signal_timestamp,
         )
 
         if not res.get("ok"):
@@ -1701,7 +1773,12 @@ def register_paper_session_routes(
             "ok": True,
             "count": len(ranked),
             "signals": ranked,
-            "ranking_note": "topsis_score is relative to this batch, not an absolute probability",
+            "ranking_note": (
+                "topsis_score is relative to this batch, not an absolute probability -- it "
+                "changes as unrelated signals arrive or expire. absolute_quality_score is "
+                "anchored to fixed reference points (100 ceiling, 60.0 admission floor) and "
+                "is stable across different batch compositions."
+            ),
         }
 
     @app.post("/paper-sessions/signal-queue/dispatch", dependencies=auth_dependencies)
@@ -1716,8 +1793,12 @@ def register_paper_session_routes(
         try:
             quantity = float(payload["quantity"]) if payload.get("quantity") is not None else None
             notional_usd = float(payload.get("notional_usd", 25.0))
+            risk_pct = float(payload["risk_pct"]) if payload.get("risk_pct") is not None else None
+            entry_ttl_seconds = (
+                int(payload["entry_ttl_seconds"]) if payload.get("entry_ttl_seconds") is not None else None
+            )
         except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid quantity/notional_usd: {exc}") from exc
+            raise HTTPException(status_code=400, detail=f"Invalid quantity/notional_usd/risk_pct/entry_ttl_seconds: {exc}") from exc
 
         # Same ceiling as the direct order route -- the queue is not a bypass.
         effective_limit = _effective_notional_cap()
@@ -1732,15 +1813,65 @@ def register_paper_session_routes(
 
         mgr = SignalQueueManager()
         try:
-            return await run_in_threadpool(
+            result = await run_in_threadpool(
                 mgr.dispatch_queued_signal,
                 queue_id=queue_id,
                 quantity=quantity,
                 notional_usd=notional_usd,
+                risk_pct=risk_pct,
+                entry_ttl_seconds=entry_ttl_seconds,
             )
         except Exception as exc:
             logger.error("queue dispatch failed queue_id=%s: %s", queue_id, exc)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        # Every entry is a LIMIT order now -- DISPATCHED/PARTIALLY_FILLED are
+        # no longer final outcomes, unlike the old MARKET-order behavior.
+        if result.get("status") in ("DISPATCHED", "PARTIALLY_FILLED"):
+            result["next_step"] = (
+                "Entry order placed as a resting LIMIT order; not yet confirmed filled. "
+                "Poll GET /paper-sessions/signal-queue/{queue_id} (or /signal-queue/history) "
+                "for the eventual PROTECTED / PARTIALLY_FILLED / PROTECTION_FAILED / "
+                "ENTRY_CANCELLED_TTL outcome."
+            )
+        return result
+
+    _QUEUE_HISTORY_SELECT = """
+        SELECT id, source_signal_id, producer, symbol, side, timeframe,
+               raw_score, topsis_score, target_strategy, status, rejection_reason,
+               execution_order_id, execution_client_order_id,
+               created_at, dispatched_at, completed_at, criteria_vector,
+               claimed_at, signal_generated_at, absolute_quality_score,
+               requested_quantity, filled_quantity
+        FROM paper_trading.signal_queue
+    """
+
+    def _row_to_history_dict(r: tuple) -> dict[str, Any]:
+        crit = r[16] if isinstance(r[16], dict) else json.loads(r[16] or "{}")
+        return {
+            "id": str(r[0]),
+            "source_signal_id": r[1],
+            "producer": r[2],
+            "symbol": r[3],
+            "side": r[4],
+            "timeframe": r[5],
+            "raw_score": float(r[6]) if r[6] is not None else None,
+            "topsis_score": float(r[7]) if r[7] is not None else None,
+            "target_strategy": r[8],
+            "status": r[9],
+            "rejection_reason": r[10],
+            "execution_order_id": r[11],
+            "execution_client_order_id": r[12],
+            "created_at": r[13].isoformat() if r[13] else None,
+            "dispatched_at": r[14].isoformat() if r[14] else None,
+            "completed_at": r[15].isoformat() if r[15] else None,
+            "criteria_vector": crit,
+            "claimed_at": r[17].isoformat() if r[17] else None,
+            "signal_generated_at": r[18].isoformat() if r[18] else None,
+            "absolute_quality_score": float(r[19]) if r[19] is not None else None,
+            "requested_quantity": float(r[20]) if r[20] is not None else None,
+            "filled_quantity": float(r[21]) if r[21] is not None else None,
+        }
 
     @app.get("/paper-sessions/signal-queue/history", dependencies=auth_dependencies)
     async def get_queue_history_endpoint(limit: int = 50):
@@ -1753,42 +1884,34 @@ def register_paper_session_routes(
         try:
             with psycopg.connect(mgr.dsn, connect_timeout=_DB_CONNECT_TIMEOUT) as conn, conn.cursor() as cur:
                 cur.execute(
-                    """
-                    SELECT id, source_signal_id, producer, symbol, side, timeframe,
-                           raw_score, topsis_score, target_strategy, status, rejection_reason,
-                           execution_order_id, execution_client_order_id,
-                           created_at, dispatched_at, completed_at, criteria_vector
-                    FROM paper_trading.signal_queue
-                    ORDER BY created_at DESC
-                    LIMIT %s;
-                    """,
+                    _QUEUE_HISTORY_SELECT + " ORDER BY created_at DESC LIMIT %s;",
                     (_clamp_limit(limit, 50),),
                 )
-                for r in cur.fetchall():
-                    crit = r[16] if isinstance(r[16], dict) else json.loads(r[16] or "{}")
-                    rows.append({
-                        "id": str(r[0]),
-                        "source_signal_id": r[1],
-                        "producer": r[2],
-                        "symbol": r[3],
-                        "side": r[4],
-                        "timeframe": r[5],
-                        "raw_score": float(r[6]) if r[6] is not None else None,
-                        "topsis_score": float(r[7]) if r[7] is not None else None,
-                        "target_strategy": r[8],
-                        "status": r[9],
-                        "rejection_reason": r[10],
-                        "execution_order_id": r[11],
-                        "execution_client_order_id": r[12],
-                        "created_at": r[13].isoformat() if r[13] else None,
-                        "dispatched_at": r[14].isoformat() if r[14] else None,
-                        "completed_at": r[15].isoformat() if r[15] else None,
-                        "criteria_vector": crit,
-                    })
+                rows = [_row_to_history_dict(r) for r in cur.fetchall()]
         except Exception as exc:
             logger.error("queue history query failed: %s", exc)
             raise HTTPException(status_code=503, detail="signal queue history unavailable") from exc
         return {"ok": True, "count": len(rows), "history": rows}
+
+    @app.get("/paper-sessions/signal-queue/{queue_id}", dependencies=auth_dependencies)
+    async def get_queue_signal_endpoint(queue_id: str):
+        """Single-row lookup for polling one dispatch's eventual outcome
+        (PROTECTED / PARTIALLY_FILLED / PROTECTION_FAILED / ENTRY_CANCELLED_TTL)
+        without pulling the whole recent-history list."""
+        from src.trading.signal_queue import SignalQueueManager
+        import psycopg
+
+        mgr = SignalQueueManager()
+        try:
+            with psycopg.connect(mgr.dsn, connect_timeout=_DB_CONNECT_TIMEOUT) as conn, conn.cursor() as cur:
+                cur.execute(_QUEUE_HISTORY_SELECT + " WHERE id = %s;", (queue_id,))
+                row = cur.fetchone()
+        except Exception as exc:
+            logger.error("queue signal lookup failed queue_id=%s: %s", queue_id, exc)
+            raise HTTPException(status_code=503, detail="signal queue lookup unavailable") from exc
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Queued signal {queue_id} not found.")
+        return {"ok": True, "signal": _row_to_history_dict(row)}
 
     @app.post("/paper-sessions/signal-queue/sync-idim", dependencies=auth_dependencies)
     async def sync_idim_signals_endpoint(payload: dict[str, Any] = Body(default={})):

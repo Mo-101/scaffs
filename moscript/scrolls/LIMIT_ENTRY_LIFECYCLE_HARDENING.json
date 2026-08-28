@@ -1,0 +1,87 @@
+{
+  "scroll_id": "LIMIT_ENTRY_LIFECYCLE_HARDENING",
+  "status": "BOOTSTRAP/EXPERIMENTAL",
+  "production_authorized": false,
+  "purpose": "Redesign the signal_queue.py dispatch pipeline to a deterministic, LIMIT-entry-first order lifecycle: every entry (grid, morning_glory, rebalance) is now a LIMIT order, never MARKET. Protective TP/SL orders are attached only after a confirmed exchange fill (full or partial), sized to whatever quantity is actually open rather than assumed. A resting, unfilled entry is cancelled once its entry_ttl_seconds elapses instead of being left to fill unexpectedly later. Adds an optional risk_pct position-sizing mode (alongside the existing notional_usd default), fixes a confirmed bug where submit_binance_testnet_intent silently dropped stop_loss/take_profit/limit_price from the tick-loop rebalance path, and records real live-testnet fills into a new paper_trading.live_fills table so PositionReconciler can see and repair real live positions instead of quarantining everything (its confidence gate previously had zero matching rows for any live trade). This scroll is a bootstrap artifact; do not treat it as a production seal.",
+  "provenance": {
+    "origin": "builder",
+    "initiator": "devin",
+    "soulprint": "devin.scaffs.builder"
+  },
+  "affected_files": [
+    "backend/agent/src/trading/signal_queue.py",
+    "backend/agent/src/trading/connectors/binance/binance_testnet_executor.py",
+    "backend/agent/src/trading/connectors/binance/futures_sdk.py",
+    "backend/agent/src/trading/idim_feed_bridge.py",
+    "backend/agent/src/trading/position/position_reconciler.py",
+    "backend/agent/src/trading/position/position_risk_resolver.py",
+    "backend/agent/src/trading/position/provenance.py",
+    "backend/agent/src/api/paper_session_routes.py",
+    "backend/agent/start_all_services.py",
+    "backend/agent/scratch/create_signal_queue_table.py",
+    "backend/agent/tests/test_signal_queue.py",
+    "backend/agent/tests/test_signal_queue_dispatch.py",
+    "backend/agent/tests/test_signal_queue_lifecycle.py",
+    "migrations/011_limit_entry_lifecycle.sql",
+    "moscript/__init__.py",
+    "moscript/registry.jsonl"
+  ],
+  "requested_permissions": {
+    "read": [
+      "backend/agent/src/trading/signal_queue.py",
+      "backend/agent/src/trading/connectors/binance/binance_testnet_executor.py",
+      "backend/agent/src/trading/connectors/binance/futures_sdk.py",
+      "backend/agent/src/trading/idim_feed_bridge.py",
+      "backend/agent/src/trading/position/position_reconciler.py",
+      "backend/agent/src/trading/position/provenance.py",
+      "backend/agent/src/api/paper_session_routes.py",
+      "backend/agent/start_all_services.py"
+    ],
+    "write": [
+      "backend/agent/src/trading/signal_queue.py",
+      "backend/agent/src/trading/connectors/binance/binance_testnet_executor.py",
+      "backend/agent/src/trading/connectors/binance/futures_sdk.py",
+      "backend/agent/src/trading/idim_feed_bridge.py",
+      "backend/agent/src/trading/position/position_reconciler.py",
+      "backend/agent/src/trading/position/position_risk_resolver.py",
+      "backend/agent/src/trading/position/provenance.py",
+      "backend/agent/src/api/paper_session_routes.py",
+      "backend/agent/start_all_services.py",
+      "backend/agent/scratch/create_signal_queue_table.py",
+      "backend/agent/tests/test_signal_queue.py",
+      "backend/agent/tests/test_signal_queue_dispatch.py",
+      "backend/agent/tests/test_signal_queue_lifecycle.py",
+      "migrations/011_limit_entry_lifecycle.sql",
+      "moscript/scrolls/LIMIT_ENTRY_LIFECYCLE_HARDENING.json",
+      "moscript/registry.jsonl"
+    ],
+    "execute": [
+      "cd /home/idona/MoStar/scaffs/backend/agent && python -m pytest tests/test_signal_queue.py tests/test_signal_queue_dispatch.py tests/test_signal_queue_lifecycle.py -q"
+    ]
+  },
+  "invariants": [
+    "Every signal_queue.py dispatch order_type is LIMIT, never MARKET",
+    "Protective STOP_MARKET/TAKE_PROFIT_MARKET orders are only attached after a confirmed exchange fill (result.status FILLED, or reconcile_pending_entries detects executed_qty > 0) -- never before",
+    "closePosition=true protective orders correctly cover a partial fill without requiring an exact quantity match",
+    "A resting LIMIT entry whose entry_ttl_seconds has elapsed with zero fill is actively cancelled via client.cancel_order, not left resting indefinitely",
+    "risk_pct sizing is only applied when both risk_pct and criteria.stop_loss are present; stop_loss remains optional everywhere else and notional_usd sizing is unchanged when risk_pct is absent",
+    "submit_binance_testnet_intent forwards stop_loss/take_profit/limit_price from the incoming TradeIntent into criteria_vector instead of dropping them",
+    "PROTECTION_FAILED is retryable (no completed_at set) -- reconcile_pending_entries retries protection attachment on a subsequent pass rather than abandoning an unprotected position",
+    "ENTRY_CANCELLED_TTL is treated as retry-eligible by idim_feed_bridge.py (no live exposure remains), while DISPATCHED/PARTIALLY_FILLED/PROTECTED are not (real exposure exists)",
+    "Prior hardening (claim/CAS concurrency, fail-closed collision/leverage/margin checks, producer allowlist, batch-independent quality score) is unmodified by this scroll"
+  ],
+  "test_commands": [
+    "cd /home/idona/MoStar/scaffs/backend/agent && .venv/bin/python -m pytest tests/test_signal_queue.py tests/test_signal_queue_dispatch.py tests/test_signal_queue_lifecycle.py -q"
+  ],
+  "rollback_files": [
+    "backend/agent/src/trading/signal_queue.py.bak",
+    "backend/agent/src/trading/connectors/binance/binance_testnet_executor.py.bak",
+    "backend/agent/src/trading/connectors/binance/futures_sdk.py.bak",
+    "backend/agent/src/trading/idim_feed_bridge.py.bak",
+    "backend/agent/src/trading/position/position_reconciler.py.bak",
+    "backend/agent/src/trading/position/position_risk_resolver.py.bak",
+    "backend/agent/src/trading/position/provenance.py.bak",
+    "backend/agent/src/api/paper_session_routes.py.bak",
+    "backend/agent/start_all_services.py.bak"
+  ]
+}

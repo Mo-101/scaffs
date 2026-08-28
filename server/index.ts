@@ -25,6 +25,11 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 const isDev = process.env.NODE_ENV !== "production";
 
+// Real Python FastAPI trading engine (backend/agent/api_server.py). Same
+// convention as frontend/vite.config.ts's dev-proxy default -- that file's
+// own comment documents "api_server.py --dev runs on :8000".
+const PAPER_ENGINE_API_URL = process.env.PAPER_ENGINE_API_URL || "http://127.0.0.1:8000";
+
 // Route params can be typed as string | string[] (e.g. for wildcard segments).
 // Our routes only ever use single simple params, so normalize to a plain string.
 function getParam(value: string | string[]): string {
@@ -932,24 +937,80 @@ app.get("/alpha/compare/:jobId/stream", (req: Request, res: Response) => {
 //   /demo/paper-*   the synthetic fixture below. Useful for UI work, and never
 //                   to be read as strategy performance.
 //
-// The fixture's numbers are produced by timers in this file and by constants in
-// server/data/paperTrading.ts. They describe no trade that ever happened, so
-// every response on that namespace is stamped with mode: "synthetic_demo" and
-// an X-Data-Mode header for anything that reads the API directly.
+// The bare /paper-sessions/* and /paper-trading/* paths are what the frontend
+// actually calls (frontend/src/lib/api.ts never calls /api/paper/*). They used
+// to be answered directly by the in-memory fixture below -- meaning any real
+// deployment reachable only through `npm run dev`/`npm start` (the only
+// documented entrypoints, which run this file) got fabricated Math.random()
+// trade data with no indication it wasn't real. They are now a genuine reverse
+// proxy to the Python engine (PAPER_ENGINE_API_URL); the fixture only answers
+// when reached via the explicit /demo/* prefix.
 // ----------------------------------------------------------------------------
 app.use("/api/paper", createPaperEngineRouter());
 
+const DEMO_FIXTURE_MARKER = Symbol("demoFixture");
+
 // Accept the fixture under /demo/paper-sessions/* by rewriting onto the legacy
 // paths the handlers below are registered on, so the split needs no changes to
-// the ~15 fixture routes.
+// the ~15 fixture routes. Mark the request so the reverse proxy below (which
+// runs on the same rewritten bare path) knows to let it fall through to the
+// fixture instead of forwarding it to the real engine.
 app.use((req: Request, _res: Response, next: NextFunction) => {
   if (req.url.startsWith("/demo/paper-sessions") || req.url.startsWith("/demo/paper-trading")) {
+    (req as any)[DEMO_FIXTURE_MARKER] = true;
     req.url = req.url.slice("/demo".length);
   }
   next();
 });
 
+// Reverse proxy: every REAL (non-demo) request under /paper-sessions or
+// /paper-trading is forwarded to the Python engine and never reaches the
+// in-memory fixture below. Loopback requests are trusted by the engine's own
+// auth layer (backend/agent/api_server.py's _is_local_client check), so no
+// token needs to be forwarded as long as PAPER_ENGINE_API_URL points at 127.0.0.1.
+app.use(["/paper-sessions", "/paper-trading"], async (req: Request, res: Response, next: NextFunction) => {
+  if ((req as any)[DEMO_FIXTURE_MARKER]) return next();
+
+  // /paper-trading is ALSO a frontend SPA page route (router.tsx), not just
+  // an API prefix (/paper-trading/notifications is the one real API path
+  // under it). Prefix-matching on "/paper-trading" catches the bare page
+  // route too -- proxying that to the Python engine 404s (it's not a real
+  // API path there) and breaks client-side navigation entirely. Only the
+  // bare path collides; let it fall through to Vite/static serving so
+  // React Router can handle it, same as before this proxy existed.
+  // Use originalUrl, not req.path -- app.use(path, fn) can rewrite req.path/
+  // req.url relative to the mount prefix; originalUrl is always the full,
+  // unmodified request path.
+  const bareUrl = req.originalUrl.split("?")[0].replace(/\/+$/, "") || "/";
+  if (bareUrl === "/paper-trading") return next();
+
+  const target = `${PAPER_ENGINE_API_URL}${req.originalUrl}`;
+  const method = req.method.toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD" && req.body && Object.keys(req.body).length > 0;
+
+  try {
+    const upstream = await fetch(target, {
+      method,
+      headers: hasBody ? { "content-type": "application/json" } : undefined,
+      body: hasBody ? JSON.stringify(req.body) : undefined,
+    });
+    const contentType = upstream.headers.get("content-type") || "application/json";
+    const text = await upstream.text();
+    res.status(upstream.status);
+    res.setHeader("content-type", contentType);
+    res.setHeader("X-Data-Mode", "live-engine");
+    res.send(text);
+  } catch (err: any) {
+    res.status(502).json({
+      ok: false,
+      error: `Paper trading engine unreachable at ${PAPER_ENGINE_API_URL}: ${err?.message || err}`,
+    });
+  }
+});
+
 // Stamp provenance onto every fixture response, whichever path reached it.
+// Only demo-marked requests reach this point now (the proxy above intercepts
+// and responds to everything else without calling next()).
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (!req.path.startsWith("/paper-sessions") && !req.path.startsWith("/paper-trading")) {
     return next();

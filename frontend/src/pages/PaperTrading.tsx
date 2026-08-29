@@ -1938,9 +1938,9 @@ export function PaperTrading() {
           </span>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="max-h-[350px] overflow-x-auto overflow-y-auto border-t border-slate-800/80">
           <table className="w-full min-w-[900px] text-xs text-slate-300">
-            <thead className="bg-slate-900/80 text-[10px] uppercase tracking-wider text-slate-500">
+            <thead className="sticky top-0 z-10 bg-slate-900 text-[10px] uppercase tracking-wider text-slate-500 shadow">
               <tr>
                 <th className="px-4 py-3 text-left">Symbol</th>
                 <th className="px-3 py-3 text-left">Engine</th>
@@ -2102,9 +2102,9 @@ export function PaperTrading() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="max-h-[420px] overflow-x-auto overflow-y-auto border-t border-slate-800/80">
           <table className="w-full min-w-[900px] text-xs text-slate-300">
-            <thead className="sticky top-0 z-10 bg-slate-900/95 text-[10px] uppercase tracking-wider text-slate-500">
+            <thead className="sticky top-0 z-10 bg-slate-900 text-[10px] uppercase tracking-wider text-slate-500 shadow">
               <tr>
                 <th className="px-4 py-3 text-left">Time</th>
                 <th className="px-3 py-3 text-left">Source</th>

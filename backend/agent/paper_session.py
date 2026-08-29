@@ -1803,7 +1803,7 @@ def _check_and_flag_accounting_invariant(
     initial_cash = float(session["initial_cash"])
     realized_pnl = trade_stats["overall"]["realized_pnl"]
     funding_pnl = float(mark.get("funding_pnl", 0.0))
-    fees = float(mark.get("fees", 0.0))
+    fees = 0.0  # realized_pnl is already net of fees; do not double-subtract
 
     # position_ledger_differences catches book.json positions drifting from
     # what trades.jsonl implies (the kind of legacy state divergence that

@@ -34,5 +34,10 @@
     "liquidation_buffer_pct": 0.005,
     "fixed_margin_per_trade": 0.0,
     "portfolio_leverage": false
-  }
+  },
+  "accounting_error": null,
+  "accounting_error_kind": null,
+  "accounting_position_differences": {},
+  "accounting_stale_mark_symbols": [],
+  "accounting_error_detected_at": "2026-08-28T12:52:01.612146+00:00"
 }

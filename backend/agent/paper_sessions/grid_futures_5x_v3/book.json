@@ -1,11 +1,16 @@
 {
-  "positions": {},
-  "cash_remaining": 10228.29942877,
-  "reserved_margin": 0.0,
-  "last_rebalance_time": "2026-08-27T12:03:18.907235+00:00",
+  "positions": {
+    "BTC-USDT": 0.032120592676715375,
+    "ETH-USDT": 1.0208597098548586,
+    "SOL-USDT": 24.132261092683112,
+    "BNB-USDT": 3.618673838581218
+  },
+  "cash_remaining": 0.0,
+  "reserved_margin": 0,
+  "last_rebalance_time": "2026-08-28T12:03:30.124682+00:00",
   "position_metadata": {},
   "realized_pnl": 238.4154944,
   "funding_pnl": 0.0,
-  "fees": 5.208091866037211,
+  "fees": 10.319685783463498,
   "initial_cash": 10000.0
 }

@@ -229,7 +229,7 @@ def write_reconstruction(session_dir: Path, output_root: Path = RECONSTRUCTED_RO
 
 def batch_reconcile(sessions_dir: Path, output_root: Path = RECONSTRUCTED_ROOT) -> list[dict[str, Any]]:
     reports = []
-    for session_dir in sorted(p for p in sessions_dir.iterdir() if p.is_dir()):
+    for session_dir in sorted(p for p in sessions_dir.iterdir() if p.is_dir() and (p / "session.json").exists()):
         reports.append(write_reconstruction(session_dir, output_root))
     return reports
 

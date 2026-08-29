@@ -411,17 +411,19 @@ def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
 
                 snap = _compute_account_snapshot(session_id, mark)
 
+                acc_leverage = 10 if "10x" in session_id else 5
+
                 cur.execute(
                     """INSERT INTO paper_trading.trading_accounts
                        (account_id, strategy_id, worker_id, timeframe, mode, leverage,
                         initial_capital, cash_balance, realized_pnl, funding_pnl, fees,
                         ledger_status, created_at, updated_at, margin_used, unrealized_pnl,
                         current_equity, strategy_actually_run)
-                       VALUES (%s, %s, %s, %s, 'paper', 1.0, %s, %s, %s, %s, %s,
+                       VALUES (%s, %s, %s, %s, 'paper', %s, %s, %s, %s, %s, %s,
                                'OK', NOW(), NOW(), 0, %s, %s, %s)
                        ON CONFLICT (account_id) DO NOTHING;""",
                     (
-                        account_id, strategy_id, session_id, timeframe,
+                        account_id, strategy_id, session_id, timeframe, acc_leverage,
                         snap.initial_capital,
                         snap.cash_balance,
                         snap.realized_pnl,

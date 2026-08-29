@@ -926,28 +926,18 @@ class SignalQueueManager:
         try:
             client.set_leverage(clean_sym, requested_leverage)
         except Exception as lev_err:
-            logger.info("Could not change leverage for %s to %sx: %s", clean_sym, requested_leverage, lev_err)
+            logger.warning("Could not set leverage for %s to %sx: %s", clean_sym, requested_leverage, lev_err)
 
         confirmed_leverage = client.get_symbol_leverage(clean_sym)
         if confirmed_leverage != requested_leverage:
-            # If an open position exists, Binance prevents leverage reduction (error -4161).
-            # We check if there is an active position on clean_sym. If so, accept confirmed position leverage.
-            active_positions = client.get_positions(clean_sym)
-            if active_positions:
-                logger.info(
-                    "Leverage mismatch for %s (%sx requested vs %sx confirmed), but active position exists. "
-                    "Proceeding with confirmed position leverage %sx.",
-                    clean_sym, requested_leverage, confirmed_leverage, confirmed_leverage
-                )
-            else:
-                reason = (
-                    f"LEVERAGE_MISMATCH for {clean_sym}: wanted {requested_leverage}x, "
-                    f"exchange confirmed {confirmed_leverage}x; dispatch aborted rather than "
-                    f"silently executing at a different leverage than the strategy authorized."
-                )
-                logger.warning(reason)
-                _write_terminal("LEVERAGE_MISMATCH_BLOCKED", reason)
-                return {"ok": False, "status": "LEVERAGE_MISMATCH_BLOCKED", "queue_id": queue_id, "reason": reason}
+            reason = (
+                f"LEVERAGE_MISMATCH for {clean_sym}: wanted {requested_leverage}x, "
+                f"exchange confirmed {confirmed_leverage}x; dispatch aborted rather than "
+                f"silently executing at a different leverage than the strategy authorized."
+            )
+            logger.warning(reason)
+            _write_terminal("LEVERAGE_MISMATCH_BLOCKED", reason)
+            return {"ok": False, "status": "LEVERAGE_MISMATCH_BLOCKED", "queue_id": queue_id, "reason": reason}
 
         # 6. Every entry is a LIMIT order now -- never MARKET. Resolve the
         # entry price before sizing: risk-based sizing needs it to compute

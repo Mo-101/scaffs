@@ -18,7 +18,7 @@ if [ -z "$TARGET_DIR" ]; then
 fi
 
 echo "==> Deploying Scaffs in: ${TARGET_DIR}"
-cd "$TARGET_DIR"
+cd -- "$TARGET_DIR"
 
 # 1. Pull latest code if git repo exists
 if [ -d ".git" ]; then

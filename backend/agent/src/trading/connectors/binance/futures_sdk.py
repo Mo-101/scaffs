@@ -890,6 +890,41 @@ class BinanceFuturesClient:
             params["symbol"] = _format_symbol(symbol)
         return self._request("GET", "/fapi/v1/fundingRate", params=params, signed=False)
 
+    def create_listen_key_sync(self) -> str:
+        """Create a user data stream listenKey.
+
+        Binance endpoint: POST /fapi/v1/listenKey
+        """
+        res = self._request("POST", "/fapi/v1/listenKey", params={}, signed=False)
+        return res["listenKey"]
+
+    def keepalive_listen_key_sync(self, listen_key: str) -> None:
+        """Keepalive a user data stream listenKey (send within 60 min).
+
+        Binance endpoint: PUT /fapi/v1/listenKey
+        """
+        self._request("PUT", "/fapi/v1/listenKey", params={}, signed=False)
+
+    def close_listen_key_sync(self, listen_key: str) -> None:
+        """Close a user data stream listenKey.
+
+        Binance endpoint: DELETE /fapi/v1/listenKey
+        """
+        self._request("DELETE", "/fapi/v1/listenKey", params={}, signed=False)
+
+    # Async protocol seam adapters for UserDataStreamManager
+    async def create_listen_key(self) -> str:
+        return await asyncio.to_thread(self.create_listen_key_sync)
+
+    async def keepalive_listen_key(self, listen_key: str) -> None:
+        await asyncio.to_thread(self.keepalive_listen_key_sync, listen_key)
+
+    async def close_listen_key(self, listen_key: str) -> None:
+        await asyncio.to_thread(self.close_listen_key_sync, listen_key)
+
+    async def cancel_algo_order_async(self, symbol: str, algo_id: int) -> None:
+        await asyncio.to_thread(self.cancel_algo_order, symbol=symbol, algo_id=algo_id)
+
 
 # Convenience singleton helper
 _client_instance: Optional[BinanceFuturesClient] = None

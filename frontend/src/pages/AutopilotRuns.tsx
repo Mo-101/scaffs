@@ -45,7 +45,7 @@ export function AutopilotRuns() {
               <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
                 Runs with a verified run card: implemented strategy body, receipted writes,
                 complete artifacts, and honest hypothesis-test linkage. Stored under{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-xs">~/.vibe-trading/runs</code>.
+                <code className="rounded bg-muted px-1 py-0.5 text-xs">~/.scaffs/runs</code>.
                 This confirms the run is <strong>real and honestly reported</strong> &mdash; it does
                 not certify that the strategy is <strong>statistically valid</strong>. Check trade
                 count and significance before trusting a Sharpe ratio.

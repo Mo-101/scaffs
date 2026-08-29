@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Vibe-Trading API Server - RESTful API for finance research and backtesting.
+"""Scaffs API Server - RESTful API for finance research and backtesting.
 
-V5: ReAct Agent + async /run + CORS env + SSE tool events.
+Production API: ReAct agent, async runs, explicit CORS, and SSE tool events.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Security, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,6 +57,41 @@ _UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+
+def _bootstrap_process_env(path: Path) -> None:
+    """Load simple dotenv entries before import-time server configuration.
+
+    Existing process environment variables always win. This keeps direct
+    ``python api_server.py`` startup consistent with containerized startup where
+    Compose has already injected the environment before Python imports the app.
+    """
+    if not path.exists():
+        return
+    try:
+        raw_lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger.warning("could not read environment file %s: %s", path, exc)
+        return
+
+    for raw in raw_lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or key in os.environ:
+            continue
+        if " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        if value:
+            os.environ[key] = value
+
+
+_bootstrap_process_env(ENV_PATH)
 
 
 # ============================================================================
@@ -435,9 +470,6 @@ _DEFAULT_LOOPBACK_HOSTS = frozenset({
     "127.0.0.1",
     "::1",
     "[::1]",
-    # Starlette/FastAPI TestClient default host; included so unit tests exercise
-    # the API without having to override Host on every request.
-    "testserver",
 })
 
 
@@ -537,28 +569,42 @@ _PAPER_DASH_ROUTES = frozenset({
 
 @app.middleware("http")
 async def _paper_dash_proxy(request: Request, call_next):
-    """Forward /api/* paper-dashboard calls to paper_dashboard_api.py on :8787."""
+    """Forward only the paper-dashboard API routes to the dashboard backend."""
     path = request.url.path
-    if path in _PAPER_DASH_ROUTES or path.startswith("/api/"):
-        # Only proxy if the paper-dashboard backend is running
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                url = f"{_PAPER_DASH_TARGET}{request.url.path}"
-                if request.url.query:
-                    url += f"?{request.url.query}"
-                headers = dict(request.headers)
-                headers.pop("host", None)
-                body = await request.body()
-                resp = await client.request(
-                    request.method, url, headers=headers, content=body
-                )
-                return JSONResponse(
-                    content=resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text,
-                    status_code=resp.status_code,
-                )
-        except Exception:
-            pass  # fall through to normal routing
-    return await call_next(request)
+    if path not in _PAPER_DASH_ROUTES:
+        return await call_next(request)
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            url = f"{_PAPER_DASH_TARGET}{path}"
+            if request.url.query:
+                url += f"?{request.url.query}"
+            headers = dict(request.headers)
+            for header in ("host", "content-length", "connection", "transfer-encoding"):
+                headers.pop(header, None)
+            resp = await client.request(
+                request.method,
+                url,
+                headers=headers,
+                content=await request.body(),
+            )
+    except httpx.RequestError as exc:
+        logger.warning("paper dashboard proxy unavailable: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"detail": "Paper dashboard backend unavailable"},
+        )
+
+    response_headers = {
+        key: value
+        for key, value in resp.headers.items()
+        if key.lower() not in {"content-length", "connection", "transfer-encoding"}
+    }
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        headers=response_headers,
+    )
 
 
 @app.middleware("http")
@@ -647,6 +693,30 @@ async def _run_startup_preflight() -> None:
     _start_scheduled_research_executor()
     if os.getenv("VIBE_TRADING_CHANNELS_AUTO_START", "").strip().lower() in {"1", "true", "yes"}:
         await _start_channel_runtime()
+
+    # Launch independent position protection reconciler loop
+    asyncio.create_task(_run_position_protection_reconciler_loop())
+
+
+async def _run_position_protection_reconciler_loop() -> None:
+    await asyncio.sleep(3)
+    logger.info("==> Running startup exchange position protection sweep...")
+    try:
+        from src.trading.position.position_reconciler import PositionReconciler
+        reconciler = PositionReconciler()
+        res = reconciler.reconcile_existing_positions(dry_run=False)
+        logger.info("Startup position protection sweep result: %s", res)
+    except Exception as exc:
+        logger.warning("Startup position protection sweep error: %s", exc)
+
+    while True:
+        await asyncio.sleep(15)
+        try:
+            from src.trading.position.position_reconciler import PositionReconciler
+            reconciler = PositionReconciler()
+            reconciler.reconcile_existing_positions(dry_run=False)
+        except Exception as exc:
+            logger.warning("Periodic position protection sweep error: %s", exc)
 
 
 @app.on_event("shutdown")
@@ -835,46 +905,53 @@ def _validate_api_auth(
     if request.method.upper() not in _SAFE_BROWSER_METHODS:
         _reject_cross_site_browser_request(request)
 
-    # Loopback clients are always trusted, even when API_AUTH_KEY is set.
-    # The key only gates non-local (LAN/remote) access.
+    api_key = _configured_api_key()
+    if api_key:
+        token = _auth_credential_from_header_or_query(
+            cred,
+            query_api_key,
+            allow_query=allow_query,
+        )
+        if not token or not hmac.compare_digest(token, api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return
+
     if _is_local_client(request):
         return
 
-    api_key = _configured_api_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API_AUTH_KEY is required for non-local API access",
-        )
-
-    token = _auth_credential_from_header_or_query(cred, query_api_key, allow_query=allow_query)
-    if not token or not hmac.compare_digest(token, api_key):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="API_AUTH_KEY is required for non-local API access",
+    )
 
 
 def _is_local_client(request: Request) -> bool:
-    """Return whether the request originates from a loopback client."""
+    """Return whether the effective client is local.
+
+    When Docker-loopback trust is enabled, a trusted loopback/gateway proxy may
+    supply X-Forwarded-For. The right-most value is used because a conventional
+    reverse proxy appends its observed peer address to any existing chain.
+    """
     host = request.client.host if request.client else ""
-    if host in {"localhost", "testclient"}:
+    if host == "localhost":
         return True
     try:
-        ip = ipaddress.ip_address(host)
+        peer_ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    if ip.is_loopback:
-        # The dashboard proxy shares the API network namespace. When the
-        # explicit Docker trust flag is enabled, use the first address added
-        # by that proxy to distinguish a real local browser from a remote
-        # browser forwarded through HTTPS. Port 8899 is loopback-only, so an
-        # arbitrary internet client cannot inject this header directly.
-        forwarded_for = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
-        if forwarded_for and _env_flag_enabled(_DOCKER_LOOPBACK_ENV):
-            try:
-                return ipaddress.ip_address(forwarded_for).is_loopback
-            except ValueError:
-                return False
-        return True
-    return _trusted_docker_loopback_ip(ip)
+
+    trusted_peer = peer_ip.is_loopback or _trusted_docker_loopback_ip(peer_ip)
+    if not trusted_peer:
+        return False
+
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    if forwarded_for and _env_flag_enabled(_DOCKER_LOOPBACK_ENV):
+        effective = forwarded_for.rsplit(",", 1)[-1].strip()
+        try:
+            return ipaddress.ip_address(effective).is_loopback
+        except ValueError:
+            return False
+    return True
 
 
 def _env_flag_enabled(name: str) -> bool:
@@ -1247,10 +1324,10 @@ def _build_response_from_run_dir(
     if include_analysis:
         analysis = build_run_analysis(
             run_dir,
-        symbols=[chart_symbol] if chart_symbol else None,
-        include_payload=chart_payload != "summary" or bool(chart_symbol),
-        include_symbol_list=chart_symbols_out is not None,
-    )
+            symbols=[chart_symbol] if chart_symbol else None,
+            include_payload=chart_payload != "summary" or bool(chart_symbol),
+            include_symbol_list=chart_symbols_out is not None,
+        )
         if chart_symbols_out is not None:
             chart_symbols_out.extend(analysis.get("chart_symbols") or [])
         response.run_stage = analysis.get("run_stage")
@@ -2059,24 +2136,12 @@ async def session_events(
 from src.api.system_routes import register_system_routes  # noqa: E402
 register_system_routes(app)
 
-# Re-export for test monkeypatch compatibility
-from src.api.system_routes import _terminate_current_process  # noqa: F401, E402
-
-
 # ============================================================================
 # Settings routes - defined in src/api/settings_routes.py
 # ============================================================================
 
 from src.api.settings_routes import register_settings_routes  # noqa: E402
 register_settings_routes(app)
-
-# Re-export for test monkeypatch compatibility
-from src.api.settings_routes import (  # noqa: F401, E402
-    _baostock_supported,
-    _baostock_installed,
-    _load_llm_providers,
-)
-
 
 # ============================================================================
 # Upload routes - defined in src/api/uploads_routes.py
@@ -2085,17 +2150,6 @@ from src.api.settings_routes import (  # noqa: F401, E402
 from src.api.uploads_routes import register_uploads_routes  # noqa: E402
 register_uploads_routes(app)
 
-# Re-export upload constants for test access via ``api_server.*``.
-from src.api.uploads_routes import (  # noqa: E402
-    MAX_UPLOAD_SIZE,
-    UPLOADS_DIR,
-    _BLOCKED_UPLOAD_EXT,
-    _BLOCKED_UPLOAD_NAMES,
-    _SHADOW_ID_RE,
-    _UPLOAD_CHUNK_SIZE,
-)
-
-
 # ============================================================================
 # Channel routes registration - after require_auth is defined
 # ============================================================================
@@ -2103,12 +2157,6 @@ from src.api.uploads_routes import (  # noqa: E402
 from src.api.channels_routes import register_channels_routes  # noqa: E402
 
 register_channels_routes(app)
-
-# Re-export for test monkeypatch compatibility
-from src.api.channels_routes import (  # noqa: F401, E402
-    ChannelPairingCommandRequest,
-)
-
 
 # ============================================================================
 # Swarm API
@@ -2485,15 +2533,14 @@ def _fetch_broker_ceilings(broker: str) -> Optional[Dict[str, Any]]:
     Reads the broker's mapped account/portfolio tool and derives an authoritative
     ceiling snapshot (buying power / funding) so the commit-time fit check binds
     to the venue's real limits rather than an agent-proposed number. Returns
-    ``None`` on any failure (channel not configured, tool error, fields not
-    recognized) so the caller falls back to the proposal's own snapshot — a
-    commit is never blocked on a broker read.
+    ``None`` on any failure; the commit endpoint treats that as a hard failure
+    and refuses to activate a live mandate without verified broker ceilings.
 
     Args:
         broker: The live-broker key.
 
     Returns:
-        A ceilings dict (canonical keys) or ``None`` to fall back.
+        A ceilings dict (canonical keys) or ``None`` when verification fails.
     """
     try:
         adapter = _live_broker_adapter(broker)
@@ -2546,12 +2593,14 @@ async def commit_mandate_endpoint(payload: CommitMandateRequest):
 
     from src.live.mandate.commit import CommitError, commit_mandate
 
-    # Prefer broker-DERIVED ceilings over the agent-supplied proposal snapshot:
-    # the commit re-check should bind to the venue's real account limits, not a
-    # number the model proposed. Best-effort — falls back to the proposal's own
-    # ceilings (commit_mandate handles ceilings_ref=None) when the broker channel
-    # is unavailable or the read fails (we never block a commit on a broker read).
+    # Bind the commit-time fit check to broker-derived limits. Live mandate
+    # activation fails closed when those limits cannot be verified.
     broker_ceilings = _fetch_broker_ceilings(payload.broker)
+    if broker_ceilings is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not verify broker account limits; mandate was not committed",
+        )
 
     try:
         result = commit_mandate(
@@ -2692,7 +2741,8 @@ def _active_mandate_state(broker: str) -> Optional[ActiveMandateState]:
         expires_in = int(delta.total_seconds())
         expired = expires_in <= 0
     except (ValueError, AttributeError):
-        logger.debug("could not parse expires_at for %s mandate", broker, exc_info=True)
+        logger.error("invalid expires_at for %s mandate; treating as expired", broker, exc_info=True)
+        expired = True
 
     return ActiveMandateState(
         broker=broker,
@@ -2777,6 +2827,37 @@ async def live_status_endpoint(broker: Optional[str] = Query(None, max_length=64
     return LiveStatusResponse(global_halted=halt_flag_set(broker=None), brokers=statuses)
 
 
+@app.get("/paper-trading/protection-health")
+async def get_protection_health():
+    """Returns real-time protection coverage health metrics for non-flat Binance positions."""
+    try:
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+        c = get_binance_futures_client()
+        positions = [p for p in c.get_positions() if float(p.get("positionAmt", 0)) != 0]
+        algos = c.get_open_algo_orders()
+
+        pos_count = len(positions)
+        algo_count = len(algos)
+        expected_algos = pos_count * 2
+        duplicates = max(0, len(algos) - len(set((a.get("symbol"), a.get("orderType")) for a in algos)))
+        coverage = (algo_count / expected_algos * 100.0) if expected_algos > 0 else 100.0
+        status = "HEALTHY" if coverage >= 100.0 and duplicates == 0 else "ALERT"
+
+        return {
+            "status": status,
+            "positions_open": pos_count,
+            "positions_protected": pos_count if coverage >= 100.0 else (algo_count // 2),
+            "positions_unprotected": max(0, pos_count - (algo_count // 2)),
+            "protection_orders_expected": expected_algos,
+            "protection_orders_live": algo_count,
+            "duplicates": duplicates,
+            "protection_coverage_pct": round(coverage, 2),
+        }
+    except Exception as exc:
+        logger.warning("Could not fetch protection health: %s", exc)
+        return {"status": "ERROR", "error": str(exc)}
+
+
 @app.post("/live/authorize", dependencies=[Depends(require_auth)])
 async def live_authorize_endpoint(payload: LiveAuthorizeRequest):
     """Describe the OAuth bootstrap on-ramp for a live broker (C2 web on-ramp).
@@ -2815,12 +2896,10 @@ async def live_authorize_endpoint(payload: LiveAuthorizeRequest):
 # ---- Runner control (SPEC §7.5): start / stop the persistent live runner ----
 #
 # A LiveRunner (R2 contract: ``LiveRunner(broker)`` with ``run_loop()`` /
-# ``run_once()``) is driven in a background task per broker. The factory is
-# injectable (``_runner_factory``) so tests stub it with no real agent/broker.
+# ``run_once()``) is driven in a background task per broker.
 # ``run_loop`` may be sync (long-blocking) or async; both are supported.
 
 _runner_tasks: Dict[str, "asyncio.Task[Any]"] = {}
-_runner_factory: Optional[Any] = None
 
 
 class LiveRunnerUnavailable(RuntimeError):
@@ -2886,9 +2965,6 @@ def _build_live_runner(broker: str) -> Any:
     Raises:
         LiveRunnerUnavailable: When the broker channel is not configured.
     """
-    if _runner_factory is not None:
-        return _runner_factory(broker)
-
     from src.live.audit import write_live_action
     from src.live.runtime.reconcile import reconcile
     from src.live.runtime.runner import LiveRunner
@@ -2972,16 +3048,17 @@ def _build_live_runner(broker: str) -> Any:
 
 
 async def _drive_runner(runner: Any) -> None:
-    """Run a runner's ``run_loop`` to completion, sync or async.
+    """Run a runner's ``run_loop`` without blocking the event loop."""
+    import inspect
 
-    A synchronous ``run_loop`` is offloaded to a worker thread so it does not
-    block the event loop; an async ``run_loop`` is awaited directly.
-    """
-    result = runner.run_loop()
-    if asyncio.iscoroutine(result):
+    run_loop = runner.run_loop
+    if inspect.iscoroutinefunction(run_loop):
+        await run_loop()
+        return
+
+    result = await asyncio.to_thread(run_loop)
+    if inspect.isawaitable(result):
         await result
-    else:
-        await asyncio.get_running_loop().run_in_executor(None, lambda: result)
 
 
 @app.post("/live/runner/start", dependencies=[Depends(require_auth)])
@@ -3284,7 +3361,7 @@ def serve_main(argv: list[str] | None = None) -> int:
                     raise
                 return await super().get_response("index.html", scope)
 
-    parser = argparse.ArgumentParser(description="Vibe-Trading Server")
+    parser = argparse.ArgumentParser(description="Scaffs Server")
     parser.add_argument("--port", type=int, default=8000, help="Listen port (default 8000)")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address")
     parser.add_argument("--dev", action="store_true", help="Dev mode: spawn Vite on :5899")
@@ -3292,11 +3369,6 @@ def serve_main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 2
-
-    if ENV_PATH.exists():
-        for k, v in _read_env_values(ENV_PATH).items():
-            if k not in os.environ and v:
-                os.environ[k] = v
 
     # Fail-closed: the Binance connector must be in testnet mode before any
     # strategy cycle or API route can attempt a real order.

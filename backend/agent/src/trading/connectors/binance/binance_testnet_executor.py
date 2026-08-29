@@ -145,15 +145,27 @@ def attach_protective_orders(
       - "PROTECTED" if every supplied boundary attached successfully.
       - "PROTECTION_FAILED" if one or more failed.
     """
-    if stop_loss is None and take_profit is None:
-        return [], "NO_BOUNDARIES", None
+    from decimal import Decimal
+    from src.trading.protection_math import protection_levels
+
+    tick = client.get_price_tick_size(symbol)
+    econ_side = "LONG" if side.upper() in ("BUY", "LONG") else "SHORT"
+
+    # Synthesize missing boundaries if either SL or TP is absent
+    if stop_loss is None or take_profit is None:
+        synth = protection_levels(
+            entry=Decimal(str(mark_price)),
+            side=econ_side,
+            tick_size=Decimal(str(tick)),
+        )
+        if stop_loss is None:
+            stop_loss = float(synth.stop_loss)
+        if take_profit is None:
+            take_profit = float(synth.take_profit)
 
     sl, tp, _ = _validate_tp_sl(side, mark_price, stop_loss, take_profit)
 
     protective_orders: list[dict[str, Any]] = []
-    entry_side = side.upper()
-    exit_side = "SELL" if entry_side in ("BUY", "LONG") else "BUY"
-    tick = client.get_price_tick_size(symbol)
     base_cid = intent_id[:28]
 
     def place_protective(order_type: str, stop_price: float, suffix: str) -> dict[str, Any]:
@@ -161,27 +173,38 @@ def attach_protective_orders(
         cid = f"{base_cid}{suffix}"
         return client.place_algo_order(
             symbol=symbol,
-            side=exit_side,
+            side="SELL" if econ_side == "LONG" else "BUY",
             order_type=order_type,
             trigger_price=formatted,
             close_position=True,
+            working_type="MARK_PRICE",
             client_algo_id=cid,
             intent_id=intent_id,
         )
 
     error_parts: list[str] = []
+    sl_res = None
     if sl is not None:
         try:
-            protective_orders.append(place_protective("STOP_MARKET", sl, "_sl"))
+            sl_res = place_protective("STOP_MARKET", sl, "_sl")
+            protective_orders.append(sl_res)
         except Exception as exc:
             error_parts.append(f"SL failed: {exc}")
+
     if tp is not None:
         try:
-            protective_orders.append(place_protective("TAKE_PROFIT_MARKET", tp, "_tp"))
+            tp_res = place_protective("TAKE_PROFIT_MARKET", tp, "_tp")
+            protective_orders.append(tp_res)
         except Exception as exc:
             error_parts.append(f"TP failed: {exc}")
+            # Fail-closed rollback: cancel SL if TP failed so position doesn't survive with partial protection
+            if sl_res and sl_res.get("algo_id"):
+                try:
+                    client.cancel_algo_order(symbol, algo_id=sl_res["algo_id"])
+                except Exception as cancel_exc:
+                    error_parts.append(f"SL rollback cancel failed: {cancel_exc}")
 
-    status = "PROTECTED" if not error_parts else "PROTECTION_FAILED"
+    status = "PROTECTED" if (not error_parts and len(protective_orders) == 2) else "PROTECTION_FAILED"
     return protective_orders, status, "; ".join(error_parts) if error_parts else None
 
 

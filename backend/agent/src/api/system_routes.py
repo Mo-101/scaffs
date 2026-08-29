@@ -154,7 +154,7 @@ def register_system_routes(
         stale = _stale_paper_sessions()
         return HealthResponse(
             status="degraded" if stale else "healthy",
-            service="Vibe-Trading API",
+            service="Scaffs API",
             timestamp=datetime.now().isoformat(),
             stale_paper_sessions=stale or None,
         )
@@ -203,7 +203,7 @@ def register_system_routes(
         background_tasks.add_task(_get_terminate_process())
         return {
             "status": "shutting-down",
-            "service": "Vibe-Trading API",
+            "service": "Scaffs API",
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -225,7 +225,7 @@ def register_system_routes(
     async def api_info():
         """Service metadata."""
         return {
-            "service": "Vibe-Trading API",
+            "service": "Scaffs API",
             "version": _app_version,
             "docs": "/docs",
             "health": "/health",

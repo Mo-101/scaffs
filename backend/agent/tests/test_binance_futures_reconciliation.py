@@ -93,9 +93,29 @@ def test_reconciliation_on_transport_timeout_simulation():
             )
         elif method == "GET" and endpoint == "/fapi/v1/order":
             return mock_filled_order
+        elif method == "GET" and endpoint == "/fapi/v1/exchangeInfo":
+            call_count -= 1
+            return {
+                "symbols": [
+                    {
+                        "symbol": "ETHUSDT",
+                        "quantityPrecision": 3,
+                        "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.001"}],
+                    }
+                ]
+            }
         raise ValueError(f"Unexpected endpoint {endpoint}")
 
     client._request = mock_request
+    client._exchange_info = {
+        "symbols": [
+            {
+                "symbol": "ETHUSDT",
+                "quantityPrecision": 3,
+                "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.001"}],
+            }
+        ]
+    }
 
     result = client.place_order(
         symbol="ETHUSDT",

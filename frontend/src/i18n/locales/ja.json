@@ -255,7 +255,7 @@
     "clearApiKey": "保存済み API キーをクリア",
     "channels": {
       "title": "IM チャンネル",
-      "description": "チャットアダプターを Web UI と CLI が使う同じ Vibe-Trading セッションランタイムへ接続します。",
+      "description": "チャットアダプターを Web UI と CLI が使う同じ Scaffs セッションランタイムへ接続します。",
       "runtime": "ランタイム",
       "running": "実行中",
       "stopped": "停止中",

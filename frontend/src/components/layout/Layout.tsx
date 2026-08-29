@@ -91,7 +91,7 @@ export function Layout() {
         {/* Brand */}
         <div className={cn("border-b", collapsed ? "p-2 flex justify-center" : "p-4")}>
           <Link to="/" className={cn("flex items-center font-bold text-base tracking-tight", collapsed ? "justify-center" : "gap-2")}>
-            <BarChart3 className="h-5 w-5 text-primary shrink-0" />
+            <img src="/Scaffs.png" alt="Scaffs" className="h-6 w-6 rounded shrink-0 object-contain" />
             {!collapsed && "Scaffs"}
           </Link>
         </div>

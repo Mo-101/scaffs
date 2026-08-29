@@ -21,5 +21,21 @@ scratch/create_signal_queue_table.py pointed at mostar_test instead of mostar).
 """
 
 import os
+import pytest
 
-os.environ["VIBE_PAPER_DATABASE_URL"] = "dbname=mostar_test port=5433"
+os.environ["VIBE_PAPER_DATABASE_URL"] = "host=127.0.0.1 dbname=mostar_test port=5433 user=postgres password=mostar"
+os.environ["API_ALLOWED_HOSTS"] = "testserver"
+
+
+
+@pytest.fixture(autouse=True)
+def _reset_env_between_tests(monkeypatch):
+    for key in (
+        "TRADING_ENV",
+        "BINANCE_TRADING_MODE",
+        "BINANCE_FUTURES_TESTNET_HOST",
+        "BINANCE_TESTNET_API_KEY",
+        "BINANCE_TESTNET_API_SECRET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+

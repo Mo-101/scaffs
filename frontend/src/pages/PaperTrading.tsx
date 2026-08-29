@@ -511,7 +511,10 @@ const EquityCurve: React.FC<{
           {moneyOrDash(currentEquity)}
         </p>
         <p className="text-xs text-gray-500">Current Equity</p>
-        <p className="text-sm text-gray-600 mt-8 text-center">Not enough live marks yet.</p>
+        <div className="mt-6 rounded-lg bg-gray-900/60 border border-gray-800 p-4 text-center">
+          <p className="text-xs font-semibold text-amber-400/90 tracking-wide uppercase">INSUFFICIENT_HISTORY</p>
+          <p className="text-xs text-gray-400 mt-1">Accumulating 15-minute evaluation snapshots (min 30 required for rolling Sharpe/Sortino)</p>
+        </div>
       </div>
     );
   }

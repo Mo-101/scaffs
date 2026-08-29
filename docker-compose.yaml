@@ -14,6 +14,8 @@ services:
     # compose network as "postgres:5432" (see docker-entrypoint.sh). A host
     # port here isn't needed, and on a shared VPS it's one less thing to
     # collide with whatever else happens to be listening on the host.
+    ports:
+      - "127.0.0.1:5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-mostar}"]
       interval: 5s
@@ -31,6 +33,15 @@ services:
         condition: service_healthy
     env_file:
       - ${ENV_FILE:-.env}
+    environment:
+      VIBE_TRADING_TRUST_DOCKER_LOOPBACK: "1"
+      # Route Idim Ikang API calls to the WSL host instead of the container loopback.
+      # The bridge defaults to IDIM_API_URL which points at 127.0.0.1:41050;
+      # inside Docker that address is the container itself, not the host.
+      # host-gateway resolves to the Docker bridge gateway (i.e. the host).
+      IDIM_API_URL: "http://host-gateway:41050"
+    extra_hosts:
+      - "host-gateway:host-gateway"
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
     command: ["api"]
@@ -46,6 +57,11 @@ services:
       - api
     env_file:
       - ${ENV_FILE:-.env}
+    environment:
+      VIBE_TRADING_TRUST_DOCKER_LOOPBACK: "1"
+      IDIM_API_URL: "http://host-gateway:41050"
+    extra_hosts:
+      - "host-gateway:host-gateway"
     command: ["worker"]
 
 volumes:

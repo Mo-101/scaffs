@@ -21,17 +21,29 @@ from src.trading.signal_queue import SignalQueueManager
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_IDIM_API = os.getenv("IDIM_API_URL", "http://127.0.0.1:41050")
-DEFAULT_DSN = os.getenv("VIBE_PAPER_DATABASE_URL") or os.getenv("DATABASE_URL") or "dbname=mostar port=5433"
+def _get_default_dsn() -> str:
+    # Prefer VIBE_PAPER_DATABASE_URL if set by docker-entrypoint.sh
+    vibe_dsn = os.getenv("VIBE_PAPER_DATABASE_URL")
+    if vibe_dsn:
+        return vibe_dsn
+    env_dsn = os.getenv("DATABASE_URL", "")
+    # If DATABASE_URL is a host socket URL like /var/run/postgresql, inside Docker that will fail.
+    if "/var/run/postgresql" in env_dsn:
+        # If running inside Docker container (e.g. postgres host is resolvable or VIBE_TRADING_TRUST_DOCKER_LOOPBACK set)
+        if os.getenv("VIBE_TRADING_TRUST_DOCKER_LOOPBACK") or os.path.exists("/.dockerenv"):
+            return "postgresql://postgres:mostar@postgres:5432/mostar"
+        return "postgresql://postgres:mostar@127.0.0.1:5433/mostar"
+    return env_dsn or "postgresql://postgres:mostar@postgres:5432/mostar"
 
+DEFAULT_IDIM_API = os.getenv("IDIM_API_URL", "http://127.0.0.1:41050")
 
 class IdimFeedBridge:
     """Bridges Idim Ikang intelligence stream into Scaffs Priority Queue."""
 
-    def __init__(self, api_url: str = DEFAULT_IDIM_API, dsn: str = DEFAULT_DSN):
+    def __init__(self, api_url: str = DEFAULT_IDIM_API, dsn: Optional[str] = None):
         self.api_url = api_url.rstrip("/")
-        self.dsn = dsn
-        self.queue_mgr = SignalQueueManager(dsn=dsn)
+        self.dsn = dsn or _get_default_dsn()
+        self.queue_mgr = SignalQueueManager(dsn=self.dsn)
         self._last_processed_signal_id: Optional[str] = None
 
     def fetch_latest_idim_signals(self, limit: int = 20) -> List[Dict[str, Any]]:
@@ -48,20 +60,33 @@ class IdimFeedBridge:
             return self._fetch_signals_from_db(limit)
 
     def _fetch_signals_from_db(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Fallback to querying financial.signals directly from Postgres."""
+        """Fallback to querying signals directly from Postgres."""
         signals = []
         try:
             with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT signal_id, pair, side, score, regime, btc_regime,
-                           entry, stop_loss, take_profit, signal_family, reason_trace, ts
-                    FROM financial.signals
-                    ORDER BY ts DESC
-                    LIMIT %s;
-                    """,
-                    (limit,),
-                )
+                try:
+                    cur.execute(
+                        """
+                        SELECT signal_id, pair, side, score, regime, btc_regime,
+                               entry, stop_loss, take_profit, signal_family, reason_trace, ts
+                        FROM financial.signals
+                        ORDER BY ts DESC
+                        LIMIT %s;
+                        """,
+                        (limit,),
+                    )
+                except Exception:
+                    conn.rollback()
+                    cur.execute(
+                        """
+                        SELECT signal_id, pair, side, score, regime, btc_regime,
+                               entry, stop_loss, take_profit, signal_family, reason_trace, ts
+                        FROM public.signals
+                        ORDER BY ts DESC
+                        LIMIT %s;
+                        """,
+                        (limit,),
+                    )
                 for r in cur.fetchall():
                     signals.append({
                         "signal_id": str(r[0]),
@@ -127,17 +152,38 @@ class IdimFeedBridge:
                         continue
 
                     symbol = sig.get("pair") or sig.get("symbol")
-                    side = sig.get("side")
+                    raw_side = str(sig.get("side") or "").upper()
+                    side = "BUY" if raw_side in ("BUY", "LONG") else ("SELL" if raw_side in ("SELL", "SHORT") else raw_side)
                     score = float(sig.get("score") or sig.get("setup_score") or 65.0)
                     timeframe = "15m" if "15m" in str(sig.get("signal_family", "")).lower() else "5m"
+
+                    entry_px = sig.get("entry")
+                    sl_val = sig.get("stop_loss")
+                    tp_val = sig.get("take_profit")
+                    if entry_px is not None and (sl_val is None or tp_val is None):
+                        try:
+                            from decimal import Decimal
+                            from src.trading.protection_math import protection_levels
+                            econ_side = "LONG" if side in ("BUY", "LONG") else "SHORT"
+                            synth = protection_levels(
+                                entry=Decimal(str(entry_px)),
+                                side=econ_side,
+                                tick_size=Decimal("0.0001"),
+                            )
+                            if sl_val is None:
+                                sl_val = float(synth.stop_loss)
+                            if tp_val is None:
+                                tp_val = float(synth.take_profit)
+                        except Exception as e:
+                            logger.warning("Could not synthesize TP/SL for signal %s: %s", sig_id, e)
 
                     crit = {
                         "regime": sig.get("regime"),
                         "btc_regime": sig.get("btc_regime"),
                         "signal_family": sig.get("signal_family"),
-                        "entry": sig.get("entry"),
-                        "stop_loss": sig.get("stop_loss"),
-                        "take_profit": sig.get("take_profit"),
+                        "entry": entry_px,
+                        "stop_loss": sl_val,
+                        "take_profit": tp_val,
                         "reason_trace": sig.get("reason_trace"),
                     }
 

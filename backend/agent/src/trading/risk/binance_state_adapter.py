@@ -31,6 +31,34 @@ class BinanceTestnetStateProvider:
             total_wallet_balance_usdt=wallet_balance,
         )
 
+
+def normalize_account_state(account: dict[str, Any]) -> dict[str, Any]:
+    """Computes explicit Initial Margin Utilization (U_IM) and Maintenance Margin Ratio (R_MM)."""
+    ZERO = Decimal("0")
+    HUNDRED = Decimal("100")
+    wallet = Decimal(str(account.get("totalWalletBalance", 0)))
+    margin_balance = Decimal(str(account.get("totalMarginBalance", 0)))
+    available = Decimal(str(account.get("availableBalance", 0)))
+    initial_margin = Decimal(str(account.get("totalInitialMargin", 0)))
+    maint_margin = Decimal(str(account.get("totalMaintMargin", 0)))
+
+    if margin_balance > ZERO:
+        initial_margin_usage = initial_margin / margin_balance
+        maintenance_margin_ratio = maint_margin / margin_balance
+    else:
+        initial_margin_usage = None
+        maintenance_margin_ratio = None
+
+    return {
+        "wallet_balance": float(wallet),
+        "margin_balance": float(margin_balance),
+        "available_balance": float(available),
+        "initial_margin": float(initial_margin),
+        "maintenance_margin": float(maint_margin),
+        "initial_margin_usage_pct": float(initial_margin_usage * HUNDRED) if initial_margin_usage is not None else None,
+        "maintenance_margin_ratio_pct": float(maintenance_margin_ratio * HUNDRED) if maintenance_margin_ratio is not None else None,
+    }
+
     def positions(self) -> tuple[str, Sequence[PositionSnapshot]]:
         raw_positions = self.client.get_positions()
         positions: list[PositionSnapshot] = []

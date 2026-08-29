@@ -404,11 +404,18 @@ def register_alpha_routes(
                 detail=f"unknown universe {universe!r}; expected one of {sorted(_VALID_UNIVERSES)}",
             )
 
-        from src.factors.registry import get_default_registry
-
-        registry = get_default_registry()
         try:
+            from src.factors.registry import get_default_registry
+            registry = get_default_registry()
             ids = registry.list(zoo=zoo, theme=theme, universe=universe)
+        except (ImportError, ModuleNotFoundError):
+            return {
+                "status": "ok",
+                "alphas": [],
+                "total": 0,
+                "returned": 0,
+                "truncated": False,
+            }
         except Exception as exc:  # noqa: BLE001
             logger.exception("registry.list failed")
             raise HTTPException(status_code=500, detail=_safe_error(exc))
@@ -452,11 +459,15 @@ def register_alpha_routes(
         if not _ALPHA_ID_RE.fullmatch(alpha_id or ""):
             raise HTTPException(status_code=400, detail="invalid alpha_id")
 
-        from src.factors.registry import RegistryError, get_default_registry
-
-        registry = get_default_registry()
         try:
+            from src.factors.registry import RegistryError, get_default_registry
+            registry = get_default_registry()
             alpha = registry.get(alpha_id)
+        except (ImportError, ModuleNotFoundError):
+            raise HTTPException(
+                status_code=404,
+                detail={"status": "error", "error": "factor registry unavailable"},
+            )
         except KeyError:
             raise HTTPException(
                 status_code=404,

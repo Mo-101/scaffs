@@ -31,8 +31,8 @@ def _clean_env(monkeypatch) -> Generator[None, None, None]:
     yield
 
 
-def test_paper_mode_requires_no_credentials():
-    os.environ["TRADING_ENV"] = "paper"
+def test_paper_mode_requires_no_credentials(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "paper")
     cfg = BinanceConfig.from_env()
     assert cfg.mode == "paper"
     assert cfg.api_key is None
@@ -41,10 +41,10 @@ def test_paper_mode_requires_no_credentials():
     assert cfg.trading_env == "paper"
 
 
-def test_testnet_mode_requires_testnet_credentials():
-    os.environ["TRADING_ENV"] = "binance_testnet"
-    os.environ["BINANCE_TESTNET_API_KEY"] = "test-key"
-    os.environ["BINANCE_TESTNET_API_SECRET"] = "test-secret"
+def test_testnet_mode_requires_testnet_credentials(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "binance_testnet")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
     cfg = BinanceConfig.from_env()
     assert cfg.mode == "testnet"
     assert cfg.api_key == "test-key"
@@ -52,50 +52,50 @@ def test_testnet_mode_requires_testnet_credentials():
     assert cfg.host == DEFAULT_FUTURES_TESTNET_HOST
 
 
-def test_testnet_mode_fails_without_credentials():
-    os.environ["TRADING_ENV"] = "binance_testnet"
+def test_testnet_mode_fails_without_credentials(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "binance_testnet")
     with pytest.raises(RuntimeError, match="Missing Binance testnet credential"):
         BinanceConfig.from_env()
 
 
-def test_testnet_mode_rejects_non_testnet_host():
-    os.environ["TRADING_ENV"] = "binance_testnet"
-    os.environ["BINANCE_TESTNET_API_KEY"] = "test-key"
-    os.environ["BINANCE_TESTNET_API_SECRET"] = "test-secret"
-    os.environ["BINANCE_FUTURES_TESTNET_HOST"] = "https://fapi.binance.com"
+def test_testnet_mode_rejects_non_testnet_host(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "binance_testnet")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
+    monkeypatch.setenv("BINANCE_FUTURES_TESTNET_HOST", "https://fapi.binance.com")
     with pytest.raises(RuntimeError, match="Testnet host"):
         BinanceConfig.from_env()
 
 
-def test_production_mode_requires_armed_switch():
-    os.environ["TRADING_ENV"] = "binance_production"
-    os.environ["BINANCE_PROD_API_KEY"] = "prod-key"
-    os.environ["BINANCE_PROD_API_SECRET"] = "prod-secret"
-    os.environ["BINANCE_PRODUCTION_ENABLED"] = "true"
+def test_production_mode_requires_armed_switch(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "binance_production")
+    monkeypatch.setenv("BINANCE_PROD_API_KEY", "prod-key")
+    monkeypatch.setenv("BINANCE_PROD_API_SECRET", "prod-secret")
+    monkeypatch.setenv("BINANCE_PRODUCTION_ENABLED", "true")
     cfg = BinanceConfig.from_env()
     assert cfg.mode == "production"
     assert cfg.api_key == "prod-key"
     assert cfg.api_secret == "prod-secret"
 
 
-def test_production_mode_rejects_when_not_enabled():
-    os.environ["TRADING_ENV"] = "binance_production"
-    os.environ["BINANCE_PROD_API_KEY"] = "prod-key"
-    os.environ["BINANCE_PROD_API_SECRET"] = "prod-secret"
+def test_production_mode_rejects_when_not_enabled(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "binance_production")
+    monkeypatch.setenv("BINANCE_PROD_API_KEY", "prod-key")
+    monkeypatch.setenv("BINANCE_PROD_API_SECRET", "prod-secret")
     with pytest.raises(RuntimeError, match="Production Binance trading is not enabled"):
         BinanceConfig.from_env()
 
 
-def test_unknown_mode_is_rejected():
-    os.environ["TRADING_ENV"] = "binance_staging"
+def test_unknown_mode_is_rejected(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "binance_staging")
     with pytest.raises(RuntimeError, match="Unsupported TRADING_ENV"):
         BinanceConfig.from_env()
 
 
-def test_binance_futures_config_from_env_for_testnet():
-    os.environ["TRADING_ENV"] = "binance_testnet"
-    os.environ["BINANCE_TESTNET_API_KEY"] = "test-key"
-    os.environ["BINANCE_TESTNET_API_SECRET"] = "test-secret"
+def test_binance_futures_config_from_env_for_testnet(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "binance_testnet")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
     fcfg = BinanceFuturesConfig.from_env()
     assert fcfg.api_key == "test-key"
     assert fcfg.api_secret == "test-secret"
@@ -103,8 +103,8 @@ def test_binance_futures_config_from_env_for_testnet():
     assert fcfg.base_url == DEFAULT_FUTURES_TESTNET_HOST
 
 
-def test_binance_futures_config_from_env_for_paper():
-    os.environ["TRADING_ENV"] = "paper"
+def test_binance_futures_config_from_env_for_paper(monkeypatch):
+    monkeypatch.setenv("TRADING_ENV", "paper")
     fcfg = BinanceFuturesConfig.from_env()
     assert fcfg.api_key == ""
     assert fcfg.api_secret == ""

@@ -132,6 +132,17 @@ def test_binance_futures_place_order_reconcile_on_1021(mock_req, mock_get_order)
 
     cfg = BinanceFuturesConfig(api_key="key", api_secret="secret")
     client = BinanceFuturesClient(cfg)
+    import time
+    client._exchange_info = {
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "quantityPrecision": 3,
+                "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.001"}],
+            }
+        ]
+    }
+    client._exchange_info_at = time.time()
     res = client.place_order(symbol="BTCUSDT", side="BUY", quantity=0.01, client_order_id="scaffs_test_1")
     assert res["ok"] is True
     assert res["reconciled"] is True
@@ -204,8 +215,9 @@ def test_paper_routes_governance_hard_cap(monkeypatch):
     monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
     monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
     monkeypatch.setenv("BINANCE_FUTURES_TESTNET_HOST", "https://testnet.binancefuture.com")
+    monkeypatch.delenv("API_AUTH_KEY", raising=False)
 
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000))
     # Placing an order exceeding $100.00 USD hard cap must be rejected with 400
     res = client.post(
         "/paper-sessions/binance-testnet/order",
@@ -233,8 +245,9 @@ def test_paper_routes_market_order_type_rejected(monkeypatch):
     monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "test-key")
     monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "test-secret")
     monkeypatch.setenv("BINANCE_FUTURES_TESTNET_HOST", "https://testnet.binancefuture.com")
+    monkeypatch.delenv("API_AUTH_KEY", raising=False)
 
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000))
     res = client.post(
         "/paper-sessions/binance-testnet/order",
         json={"symbol": "BTCUSDT", "side": "BUY", "quantity": 0.001, "price": 50000.0, "order_type": "MARKET"},
@@ -321,7 +334,7 @@ def test_manual_order_routes_through_signal_queue_pipeline(monkeypatch):
     monkeypatch.setattr(bte_module, "BinanceTestnetExecutor", _FakeManualOrderExecutor)
     _FakeManualOrderExecutor.last_intent = None
 
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000))
     # quantity(0.001) * price(50000) = $50 notional -- previously this exact
     # combination would have spuriously tripped dispatch_queued_signal's
     # NOTIONAL_STEP_TOO_COARSE check against its 100.0 default if notional_usd
@@ -363,7 +376,7 @@ def test_manual_order_margin_mismatch_reachable(monkeypatch):
     monkeypatch.setattr(bte_module, "BinanceTestnetExecutor", _FakeManualOrderExecutor)
     _FakeManualOrderExecutor.last_intent = None
 
-    client = TestClient(app)
+    client = TestClient(app, client=("127.0.0.1", 50000))
     res = client.post(
         "/paper-sessions/binance-testnet/order",
         json={"symbol": "BTCUSDT", "side": "BUY", "quantity": 0.001, "price": 50000.0},

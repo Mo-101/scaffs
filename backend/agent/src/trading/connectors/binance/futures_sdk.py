@@ -744,7 +744,7 @@ class BinanceFuturesClient:
         trigger_price: float,
         close_position: bool = False,
         price: float | None = None,
-        working_type: str = "CONTRACT_PRICE",
+        working_type: str = "MARK_PRICE",
         client_algo_id: Optional[str] = None,
         intent_id: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -809,6 +809,22 @@ class BinanceFuturesClient:
         if symbol:
             params["symbol"] = symbol.upper().replace("-", "").replace("/", "")
         return self._request("GET", "/fapi/v1/openAlgoOrders", params=params, signed=True)
+
+    def cancel_algo_order(self, symbol: str, algo_id: Optional[int] = None, client_algo_id: Optional[str] = None) -> dict[str, Any]:
+        """Cancel a USD-M Futures conditional / algo order.
+
+        Binance endpoint: DELETE /fapi/v1/algoOrder
+        """
+        self._require_testnet("cancel_algo_order")
+        formatted_symbol = symbol.upper().replace("-", "").replace("/", "")
+        params: dict[str, Any] = {"symbol": formatted_symbol}
+        if algo_id is not None:
+            params["algoId"] = int(algo_id)
+        elif client_algo_id:
+            params["clientAlgoId"] = client_algo_id
+        else:
+            raise ValueError("Either algo_id or client_algo_id must be provided to cancel_algo_order")
+        return self._request("DELETE", "/fapi/v1/algoOrder", params=params, signed=True)
 
     def get_all_orders(self, symbol: str, start_time_ms: Optional[int] = None, end_time_ms: Optional[int] = None, limit: int = 500) -> list[dict[str, Any]]:
         """Fetch all historical orders for a symbol within a time window."""

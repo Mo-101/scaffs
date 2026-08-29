@@ -24,11 +24,22 @@ import psycopg
 from psycopg import errors as psycopg_errors
 from psycopg.types.json import Json
 
-_PAPER_SESSIONS_DIR = Path(__file__).resolve().parents[2] / "paper_sessions"
-
 logger = logging.getLogger(__name__)
 
-DEFAULT_DSN = "dbname=mostar port=5433"
+_PAPER_SESSIONS_DIR = Path(__file__).resolve().parents[2] / "paper_sessions"
+
+def _get_default_dsn() -> str:
+    vibe_dsn = os.getenv("VIBE_PAPER_DATABASE_URL")
+    if vibe_dsn:
+        return vibe_dsn
+    env_dsn = os.getenv("DATABASE_URL", "")
+    if "/var/run/postgresql" in env_dsn:
+        if os.getenv("VIBE_TRADING_TRUST_DOCKER_LOOPBACK") or os.path.exists("/.dockerenv"):
+            return "postgresql://postgres:mostar@postgres:5432/mostar"
+        return "postgresql://postgres:mostar@127.0.0.1:5433/mostar"
+    return env_dsn or "postgresql://postgres:mostar@postgres:5432/mostar"
+
+DEFAULT_DSN = _get_default_dsn()
 
 from src.trading.strategy_binding import allowed_workers
 

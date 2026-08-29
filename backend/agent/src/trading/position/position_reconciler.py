@@ -208,9 +208,20 @@ class PositionReconciler:
             boundary.error = f"client_algo_id {client_algo_id} already exists on exchange"
             return boundary
         if not _valid_boundary(position_side, order_type, rounded, mark):
-            boundary.error = (
-                f"trigger {rounded} would fire immediately at mark {mark} for {position_side}"
-            )
+            boundary.error = "BOUNDARY_ALREADY_BREACHED"
+            logger.warning("Boundary already breached for %s (%s) at mark %s, rounded %s; triggering fail-safe close", symbol, position_side, mark, rounded)
+            if not dry_run:
+                try:
+                    exit_side = _exit_order_side(position_side)
+                    self.client.place_order(
+                        symbol=symbol,
+                        side=exit_side,
+                        order_type="MARKET",
+                        quantity=abs(float(position.get("positionAmt", 0.0))),
+                        reduce_only=True,
+                    )
+                except Exception as close_exc:
+                    logger.error("Fail-safe close failed for %s: %s", symbol, close_exc)
             return boundary
         if dry_run:
             return boundary
@@ -488,3 +499,143 @@ class PositionReconciler:
         }
         self.ledger.record({"summary": report})
         return report
+
+    def _emergency_close_position(self, position: dict[str, Any], reason: str, dry_run: bool = False) -> None:
+        symbol = _norm_symbol(position["symbol"])
+        side = _position_side(position)
+        qty = abs(float(position.get("positionAmt", 0.0)))
+        logger.warning("Emergency closing position %s (%s, qty %s) - Reason: %s", symbol, side, qty, reason)
+        if not dry_run and qty > 0:
+            exit_side = _exit_order_side(side)
+            try:
+                self.client.place_order(
+                    symbol=symbol,
+                    side=exit_side,
+                    order_type="MARKET",
+                    quantity=qty,
+                    reduce_only=True,
+                )
+                logger.info("Emergency close executed for %s", symbol)
+            except Exception as exc:
+                logger.error("Emergency close failed for %s: %s", symbol, exc)
+
+    def reconcile_existing_positions(self, dry_run: bool = False) -> dict[str, Any]:
+        """Independent exchange-authoritative retrofit reconciler.
+
+        Scans existing non-flat positions on Binance, validates boundary breach states,
+        places missing SL/TP via Algo API, and enforces fail-closed protection.
+        """
+        from src.trading.protection_math import protection_levels
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        positions = self.client.get_positions()
+        algos = self.client.get_open_algo_orders()
+        report_items = []
+
+        for p in positions:
+            qty = Decimal(str(p.get("positionAmt", 0)))
+            if qty == 0:
+                continue
+
+            symbol = _norm_symbol(p["symbol"])
+            entry = Decimal(str(p.get("entryPrice", 0)))
+            mark = Decimal(str(p.get("markPrice", entry)))
+            economic_side = "LONG" if qty > 0 else "SHORT"
+            tick_size = Decimal(str(self.client.get_price_tick_size(symbol)))
+
+            if entry <= 0:
+                continue
+
+            try:
+                levels = protection_levels(
+                    entry=entry,
+                    side=economic_side,
+                    tick_size=tick_size,
+                )
+            except Exception as e:
+                logger.warning("Could not calculate protection levels for %s: %s", symbol, e)
+                continue
+
+            has_sl, has_tp, client_ids = self._matching_algo_orders(symbol, economic_side, algos)
+
+            # Check boundary breach state
+            if economic_side == "LONG":
+                stop_breached = mark <= levels.stop_loss
+                tp_breached = mark >= levels.take_profit
+            else:
+                stop_breached = mark >= levels.stop_loss
+                tp_breached = mark <= levels.take_profit
+
+            action_taken = "NONE"
+
+            if stop_breached:
+                action_taken = "CLOSED_STOP_BREACHED"
+                self._emergency_close_position(p, reason="RETROFIT_STOP_ALREADY_BREACHED", dry_run=dry_run)
+                report_items.append({"symbol": symbol, "side": economic_side, "action": action_taken, "mark": float(mark), "sl": float(levels.stop_loss)})
+                continue
+
+            if tp_breached:
+                action_taken = "CLOSED_TP_BREACHED"
+                self._emergency_close_position(p, reason="RETROFIT_TP_ALREADY_BREACHED", dry_run=dry_run)
+                report_items.append({"symbol": symbol, "side": economic_side, "action": action_taken, "mark": float(mark), "tp": float(levels.take_profit)})
+                continue
+
+            # Attach missing protection legs
+            exit_side = "SELL" if economic_side == "LONG" else "BUY"
+            pos_side = p.get("positionSide", "BOTH")
+            base_cid = f"{symbol[:8]}_{economic_side[0]}"
+
+            sl_placed = has_sl
+            tp_placed = has_tp
+
+            if not has_sl and not dry_run:
+                try:
+                    self.client.place_algo_order(
+                        symbol=symbol,
+                        side=exit_side,
+                        order_type="STOP_MARKET",
+                        trigger_price=float(levels.stop_loss),
+                        close_position=True,
+                        working_type="MARK_PRICE",
+                        client_algo_id=f"{base_cid}_rsl",
+                    )
+                    sl_placed = True
+                    action_taken = "ATTACHED_SL"
+                except Exception as exc:
+                    logger.warning("Retrofit SL failed for %s: %s", symbol, exc)
+
+            if not has_tp and not dry_run:
+                try:
+                    self.client.place_algo_order(
+                        symbol=symbol,
+                        side=exit_side,
+                        order_type="TAKE_PROFIT_MARKET",
+                        trigger_price=float(levels.take_profit),
+                        close_position=True,
+                        working_type="MARK_PRICE",
+                        client_algo_id=f"{base_cid}_rtp",
+                    )
+                    tp_placed = True
+                    action_taken = "ATTACHED_SL_TP" if action_taken == "ATTACHED_SL" else "ATTACHED_TP"
+                except Exception as exc:
+                    logger.warning("Retrofit TP failed for %s: %s", symbol, exc)
+
+            # Verification pass
+            if not dry_run and not (sl_placed and tp_placed):
+                action_taken = "FAILED_VERIFY_CLOSED"
+                self._emergency_close_position(p, reason="RETROFIT_PROTECTION_VERIFY_FAILED", dry_run=dry_run)
+
+            report_items.append({
+                "symbol": symbol,
+                "side": economic_side,
+                "action": action_taken,
+                "entry": float(entry),
+                "mark": float(mark),
+                "sl": float(levels.stop_loss),
+                "tp": float(levels.take_profit),
+                "has_sl": sl_placed,
+                "has_tp": tp_placed,
+            })
+
+        return {"run_at": timestamp, "dry_run": dry_run, "reconciled_count": len(report_items), "details": report_items}
+

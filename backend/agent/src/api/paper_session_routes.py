@@ -1134,6 +1134,36 @@ def register_paper_session_routes(
                 "error": str(exc),
             }
 
+    @app.get("/paper-sessions/binance-testnet/protection-health", dependencies=auth_dependencies)
+    async def get_binance_testnet_protection_health():
+        """Returns real-time protection coverage health metrics for non-flat Binance positions."""
+        from src.trading.connectors.binance.futures_sdk import get_binance_futures_client
+        try:
+            c = get_binance_futures_client()
+            positions = await run_in_threadpool(lambda: [p for p in c.get_positions() if float(p.get("positionAmt", 0)) != 0])
+            algos = await run_in_threadpool(c.get_open_algo_orders)
+
+            pos_count = len(positions)
+            algo_count = len(algos)
+            expected_algos = pos_count * 2
+            duplicates = max(0, len(algos) - len(set((a.get("symbol"), a.get("orderType")) for a in algos)))
+            coverage = (algo_count / expected_algos * 100.0) if expected_algos > 0 else 100.0
+            status = "HEALTHY" if coverage >= 100.0 and duplicates == 0 else "ALERT"
+
+            return {
+                "status": status,
+                "positions_open": pos_count,
+                "positions_protected": pos_count if coverage >= 100.0 else (algo_count // 2),
+                "positions_unprotected": max(0, pos_count - (algo_count // 2)),
+                "protection_orders_expected": expected_algos,
+                "protection_orders_live": algo_count,
+                "duplicates": duplicates,
+                "protection_coverage_pct": round(coverage, 2),
+            }
+        except Exception as exc:
+            logger.warning("Could not fetch protection health: %s", exc)
+            return {"status": "ERROR", "error": str(exc)}
+
     @app.get("/paper-sessions/binance-testnet/balance", dependencies=auth_dependencies)
     async def get_binance_testnet_balance():
         """Retrieve live asset balances from the Binance Futures Testnet account."""
@@ -1792,7 +1822,7 @@ def register_paper_session_routes(
 
         try:
             quantity = float(payload["quantity"]) if payload.get("quantity") is not None else None
-            notional_usd = float(payload.get("notional_usd", 25.0))
+            notional_usd = float(payload.get("notional_usd", 85.0))
             risk_pct = float(payload["risk_pct"]) if payload.get("risk_pct") is not None else None
             entry_ttl_seconds = (
                 int(payload["entry_ttl_seconds"]) if payload.get("entry_ttl_seconds") is not None else None
@@ -1937,7 +1967,7 @@ def register_paper_session_routes(
         auto_dispatch = requested_auto and env_allows
 
         try:
-            notional_usd = float(payload.get("notional_usd", 25.0))
+            notional_usd = float(payload.get("notional_usd", 85.0))
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=f"Invalid notional_usd: {exc}") from exc
 

@@ -23,7 +23,7 @@ export function DevRuntimeBanner() {
         <span>UI: vite-dev (:5899)</span>
         <span>API: proxied → 127.0.0.1:8000</span>
         <span>Runs: agent/runs (session)</span>
-        <span>Evidence: ~/.vibe-trading/runs (autopilot)</span>
+        <span>Evidence: ~/.scaffs/runs (autopilot)</span>
       </div>
       <button
         type="button"

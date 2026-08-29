@@ -14,14 +14,26 @@ if str(AGENT_ROOT) not in sys.path:
 from src.trading.position.position_reconciler import PositionReconciler
 
 
-def _fake_psycopg(monkeypatch, rows):
+def _fake_psycopg(monkeypatch, signal_rows=None, fill_rows=None):
+    if signal_rows is None:
+        signal_rows = []
+    if fill_rows is None:
+        fill_rows = []
+
     class FakeCursor:
-        def __init__(self, data):
-            self._rows = data
+        def __init__(self):
+            self._rows = []
             self._idx = 0
 
-        def execute(self, *args, **kwargs):
-            pass
+        def execute(self, query, *args, **kwargs):
+            query_str = str(query)
+            if "fills" in query_str:
+                self._rows = fill_rows
+            elif "signal_queue" in query_str:
+                self._rows = signal_rows
+            else:
+                self._rows = []
+            self._idx = 0
 
         def fetchone(self):
             if self._idx < len(self._rows):
@@ -29,6 +41,11 @@ def _fake_psycopg(monkeypatch, rows):
                 self._idx += 1
                 return row
             return None
+
+        def fetchall(self):
+            res = self._rows[self._idx :]
+            self._idx = len(self._rows)
+            return res
 
         def __enter__(self):
             return self
@@ -44,7 +61,7 @@ def _fake_psycopg(monkeypatch, rows):
             return False
 
         def cursor(self):
-            return FakeCursor(rows)
+            return FakeCursor()
 
         def commit(self):
             pass
@@ -75,8 +92,19 @@ class FakeClient:
         self.placed.append(kwargs)
         return {"client_algo_id": kwargs.get("client_algo_id")}
 
+    def get_price_tick_size(self, symbol):
+        return 0.1
 
-def test_protected_position():
+    def get_quantity_precision(self, symbol):
+        return 3
+
+
+def test_protected_position(monkeypatch):
+    _fake_psycopg(
+        monkeypatch,
+        signal_rows=[("queue-1", {"stop_loss": 18000.0, "take_profit": 22000.0})],
+        fill_rows=[(None, "fill-1", "order-1", "BUY", 0.05, 19000.0, 0.0, None)],
+    )
     client = FakeClient()
     client.get_open_algo_orders = lambda: [
         {
@@ -101,19 +129,20 @@ def test_protected_position():
     assert not client.placed
 
 
-def test_unprotected_no_origin():
+def test_unprotected_no_origin(monkeypatch):
+    _fake_psycopg(monkeypatch, [])
     client = FakeClient()
     rec = PositionReconciler(client=client, dsn="")
     report = rec.run(dry_run=True)
     assert report["positions"][0]["status"] == "ALERT"
-    assert "originating" in report["positions"][0]["alert_reason"]
+    assert "QUARANTINE" in report["positions"][0]["alert_reason"]
 
 
 def test_repair_dry_run(monkeypatch):
     client = FakeClient()
     _fake_psycopg(
         monkeypatch,
-        [
+        signal_rows=[
             (
                 "queue-1",
                 {
@@ -124,6 +153,7 @@ def test_repair_dry_run(monkeypatch):
                 },
             )
         ],
+        fill_rows=[(None, "fill-1", "order-1", "BUY", 0.05, 19000.0, 0.0, None)],
     )
     rec = PositionReconciler(client=client, dsn="")
     report = rec.run(dry_run=True)
@@ -131,14 +161,14 @@ def test_repair_dry_run(monkeypatch):
     assert pos["status"] == "REPAIR_PENDING"
     assert len(pos["repairs"]) == 2
     assert not client.placed
-    assert pos["repairs"][0]["client_algo_id"].startswith("protect:BTCUSDT:LONG:")
+    assert pos["repairs"][0]["client_algo_id"].startswith("BTCUSDT_L_sl_")
 
 
 def test_repair_live(monkeypatch):
     client = FakeClient()
     _fake_psycopg(
         monkeypatch,
-        [
+        signal_rows=[
             (
                 "queue-1",
                 {
@@ -149,9 +179,11 @@ def test_repair_live(monkeypatch):
                 },
             )
         ],
+        fill_rows=[(None, "fill-1", "order-1", "BUY", 0.05, 19000.0, 0.0, None)],
     )
     rec = PositionReconciler(client=client, dsn="")
     report = rec.run(dry_run=False)
     pos = report["positions"][0]
     assert pos["status"] == "PROTECTED"
     assert len(client.placed) == 2
+

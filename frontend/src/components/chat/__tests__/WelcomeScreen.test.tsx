@@ -9,7 +9,7 @@ describe("WelcomeScreen", () => {
 
   it("renders the title", () => {
     render(<WelcomeScreen onExample={onExample} />);
-    expect(screen.getByText("Vibe-Trading")).toBeInTheDocument();
+    expect(screen.getByText("Scaffs")).toBeInTheDocument();
   });
 
   it("renders capability chips", () => {
@@ -21,9 +21,9 @@ describe("WelcomeScreen", () => {
 
   it("renders example categories", () => {
     render(<WelcomeScreen onExample={onExample} />);
-    expect(screen.getByText("A-Share Backtest")).toBeInTheDocument();
-    expect(screen.getByText("Research & Analysis")).toBeInTheDocument();
-    expect(screen.getByText("Swarm Teams")).toBeInTheDocument();
+    expect(screen.getAllByText("A-Share Backtest")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("Research & Analysis")[0]).toBeInTheDocument();
+    expect(screen.getAllByText("Swarm Teams")[0]).toBeInTheDocument();
   });
 
   it("calls onExample with prompt when an example button is clicked", async () => {

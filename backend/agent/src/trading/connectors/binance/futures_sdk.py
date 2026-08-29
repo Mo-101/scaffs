@@ -113,6 +113,16 @@ class BinanceConfig:
 def _require_env(name: str, context: str) -> str:
     value = os.getenv(name, "").strip().strip("'\"")
     if not value:
+        # Fallback alias checking for testnet credentials
+        aliases = []
+        if name == "BINANCE_TESTNET_API_KEY":
+            aliases = ["BINANCE_DEMO_API_KEY", "MOSTAR_ATTESTOR_BINANCE_DEMO_KEY", "BINANCE_KEY"]
+        elif name == "BINANCE_TESTNET_API_SECRET":
+            aliases = ["BINANCE_DEMO_API_SECRET", "MOSTAR_ATTESTOR_BINANCE_DEMO_SECRET", "BINANCE_SECRET"]
+        for alias in aliases:
+            alt_val = os.getenv(alias, "").strip().strip("'\"")
+            if alt_val:
+                return alt_val
         raise RuntimeError(f"Missing Binance {context} credential: {name}")
     return value
 

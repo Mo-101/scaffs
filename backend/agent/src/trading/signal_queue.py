@@ -932,7 +932,7 @@ class SignalQueueManager:
         if confirmed_leverage != requested_leverage:
             # If an open position exists, Binance prevents leverage reduction (error -4161).
             # We check if there is an active position on clean_sym. If so, accept confirmed position leverage.
-            active_positions = client.get_open_positions(clean_sym)
+            active_positions = client.get_positions(clean_sym)
             if active_positions:
                 logger.info(
                     "Leverage mismatch for %s (%sx requested vs %sx confirmed), but active position exists. "

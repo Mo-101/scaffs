@@ -1668,7 +1668,7 @@ async function startServer() {
   }
 
   app.listen(PORT, HOST, () => {
-    console.log(`🚀 Vibe-Trading Server running at http://${HOST}:${PORT}`);
+    console.log(`🚀 Scaffs Server running at http://${HOST}:${PORT}`);
   });
 }
 

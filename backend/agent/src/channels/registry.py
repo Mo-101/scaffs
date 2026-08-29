@@ -20,22 +20,22 @@ logger = logging.getLogger(__name__)
 _INTERNAL = frozenset({"base", "bus", "config", "manager", "pairing", "registry", "runtime", "utils"})
 
 _INSTALL_HINTS: dict[str, str] = {
-    "dingtalk": "pip install 'vibe-trading-ai[dingtalk]'",
-    "discord": "pip install 'vibe-trading-ai[discord]'",
+    "dingtalk": "pip install 'scaffs[dingtalk]'",
+    "discord": "pip install 'scaffs[discord]'",
     "email": "No extra Python package required; configure channels.email in the agent config.",
-    "feishu": "pip install 'vibe-trading-ai[feishu]'",
-    "matrix": "pip install 'vibe-trading-ai[matrix]'",
-    "mochat": "pip install 'vibe-trading-ai[mochat]'",
-    "msteams": "pip install 'vibe-trading-ai[msteams]'",
-    "napcat": "pip install 'vibe-trading-ai[napcat]'",
-    "qq": "pip install 'vibe-trading-ai[qq]'",
+    "feishu": "pip install 'scaffs[feishu]'",
+    "matrix": "pip install 'scaffs[matrix]'",
+    "mochat": "pip install 'scaffs[mochat]'",
+    "msteams": "pip install 'scaffs[msteams]'",
+    "napcat": "pip install 'scaffs[napcat]'",
+    "qq": "pip install 'scaffs[qq]'",
     "signal": "No extra Python package required; install and run signal-cli-rest-api separately.",
-    "slack": "pip install 'vibe-trading-ai[slack]'",
-    "telegram": "pip install 'vibe-trading-ai[telegram]'",
-    "wecom": "pip install 'vibe-trading-ai[wecom]'",
+    "slack": "pip install 'scaffs[slack]'",
+    "telegram": "pip install 'scaffs[telegram]'",
+    "wecom": "pip install 'scaffs[wecom]'",
     "weixin": "No extra Python package required; configure channels.weixin in the agent config.",
-    "whatsapp": "pip install 'vibe-trading-ai[whatsapp]'",
-    "websocket": "pip install 'vibe-trading-ai[channels]'",
+    "whatsapp": "pip install 'scaffs[whatsapp]'",
+    "websocket": "pip install 'scaffs[channels]'",
 }
 
 _AVAILABILITY_FLAGS: dict[str, tuple[str, ...]] = {
@@ -136,7 +136,7 @@ def inspect_channel(name: str) -> ChannelAvailability:
                 available=False,
                 display_name=str(display),
                 error=missing,
-                install_hint=_INSTALL_HINTS.get(name, f"pip install 'vibe-trading-ai[{name}]'"),
+                install_hint=_INSTALL_HINTS.get(name, f"pip install 'scaffs[{name}]'"),
             )
         return ChannelAvailability(name=name, available=True, display_name=str(display))
     except Exception as exc:  # noqa: BLE001 - status API must report every adapter
@@ -145,7 +145,7 @@ def inspect_channel(name: str) -> ChannelAvailability:
             available=False,
             display_name=name.replace("_", " ").title(),
             error=f"{type(exc).__name__}: {exc}",
-            install_hint=_INSTALL_HINTS.get(name, f"pip install 'vibe-trading-ai[{name}]'"),
+            install_hint=_INSTALL_HINTS.get(name, f"pip install 'scaffs[{name}]'"),
         )
 
 

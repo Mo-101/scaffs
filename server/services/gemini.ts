@@ -36,7 +36,7 @@ export async function generateAgentTurn(prompt: string, history: Array<{ role: s
             role: "user",
             parts: [
               {
-                text: `You are the lead quant research director of Vibe-Trading.
+                text: `You are the lead quant research director of Scaffs.
 Analyze the user's finance/trading inquiry and respond with a structured JSON object:
 {
   "thought": "Internal quantitative reasoning and step-by-step hypothesis testing plan",

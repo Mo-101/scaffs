@@ -1,5 +1,8 @@
+name: scaffs
+
 services:
   postgres:
+    container_name: scaffs-postgres-1
     image: postgres:15-alpine
     restart: unless-stopped
     env_file:
@@ -23,6 +26,7 @@ services:
       retries: 10
 
   api:
+    container_name: scaffs-api-1
     build:
       context: .
       dockerfile: Dockerfile
@@ -47,6 +51,7 @@ services:
     command: ["api"]
 
   worker:
+    container_name: scaffs-worker-1
     build:
       context: .
       dockerfile: Dockerfile
@@ -66,3 +71,4 @@ services:
 
 volumes:
   postgres_data:
+

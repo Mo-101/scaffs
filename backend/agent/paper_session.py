@@ -379,7 +379,9 @@ def _compute_account_snapshot(
 
 
 def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
-    dsn = os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=mostar port=5433")
+    if "PYTEST_CURRENT_TEST" in os.environ and not os.getenv("VIBE_PAPER_TEST_DB_MIRROR"):
+        return
+    dsn = os.getenv("VIBE_PAPER_DATABASE_URL", "host=127.0.0.1 port=5433 user=postgres password=mostar dbname=mostar")
     try:
         venv_site = "/home/idona/.vibe-trading-venv/lib/python3.12/site-packages"
         if os.path.exists(venv_site) and venv_site not in sys.path:
@@ -415,7 +417,7 @@ def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
                         initial_capital, cash_balance, realized_pnl, funding_pnl, fees,
                         ledger_status, created_at, updated_at, margin_used, unrealized_pnl,
                         current_equity, strategy_actually_run)
-                       VALUES (%s, %s, %s, %s, 'paper', NULL, %s, %s, %s, %s, %s,
+                       VALUES (%s, %s, %s, %s, 'paper', 1.0, %s, %s, %s, %s, %s,
                                'OK', NOW(), NOW(), 0, %s, %s, %s)
                        ON CONFLICT (account_id) DO NOTHING;""",
                     (

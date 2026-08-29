@@ -31,6 +31,32 @@ class BinanceTestnetStateProvider:
             total_wallet_balance_usdt=wallet_balance,
         )
 
+    def positions(self) -> tuple[str, Sequence[PositionSnapshot]]:
+        raw_positions = self.client.get_positions()
+        positions: list[PositionSnapshot] = []
+        for raw in raw_positions:
+            try:
+                symbol = str(raw.get("symbol", "")).upper()
+                notional = Decimal(str(raw.get("notionalValue", "0")))
+                # positionRisk sometimes returns notional as signed; if not,
+                # fall back to positionAmt * markPrice.
+                if notional == 0:
+                    amt = Decimal(str(raw.get("positionAmt", "0")))
+                    price = Decimal(str(raw.get("markPrice", raw.get("entryPrice", "0"))))
+                    notional = amt * price
+                leverage = Decimal(str(raw.get("leverage", "1")))
+                positions.append(
+                    PositionSnapshot(
+                        symbol=symbol,
+                        signed_notional_usdt=notional,
+                        leverage=leverage,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Failed to parse Binance position: %s", exc)
+                return ("ERROR", [])
+        return ("OK", positions)
+
 
 def normalize_account_state(account: dict[str, Any]) -> dict[str, Any]:
     """Computes explicit Initial Margin Utilization (U_IM) and Maintenance Margin Ratio (R_MM)."""
@@ -59,28 +85,3 @@ def normalize_account_state(account: dict[str, Any]) -> dict[str, Any]:
         "maintenance_margin_ratio_pct": float(maintenance_margin_ratio * HUNDRED) if maintenance_margin_ratio is not None else None,
     }
 
-    def positions(self) -> tuple[str, Sequence[PositionSnapshot]]:
-        raw_positions = self.client.get_positions()
-        positions: list[PositionSnapshot] = []
-        for raw in raw_positions:
-            try:
-                symbol = str(raw.get("symbol", "")).upper()
-                notional = Decimal(str(raw.get("notionalValue", "0")))
-                # positionRisk sometimes returns notional as signed; if not,
-                # fall back to positionAmt * markPrice.
-                if notional == 0:
-                    amt = Decimal(str(raw.get("positionAmt", "0")))
-                    price = Decimal(str(raw.get("markPrice", raw.get("entryPrice", "0"))))
-                    notional = amt * price
-                leverage = Decimal(str(raw.get("leverage", "1")))
-                positions.append(
-                    PositionSnapshot(
-                        symbol=symbol,
-                        signed_notional_usdt=notional,
-                        leverage=leverage,
-                    )
-                )
-            except Exception as exc:
-                logger.warning("Failed to parse Binance position: %s", exc)
-                return ("ERROR", [])
-        return ("OK", positions)

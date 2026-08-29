@@ -123,6 +123,20 @@ class RiskTests(unittest.TestCase):
         d = self.decide(positions_status="ERROR")
         self.assertIn("EXCHANGE_STATE_UNAVAILABLE", d.reasons)
 
+    def test_binance_state_provider_has_positions_method(self):
+        from unittest.mock import MagicMock
+        from src.trading.risk.binance_state_adapter import BinanceTestnetStateProvider
+        mock_client = MagicMock()
+        mock_client.config.base_url = "https://testnet.binancefuture.com"
+        mock_client.config.is_testnet = True
+        mock_client.get_positions.return_value = [{"symbol": "BTCUSDT", "notionalValue": "100", "leverage": "5"}]
+        provider = BinanceTestnetStateProvider(client=mock_client)
+        status, positions = provider.positions()
+        self.assertEqual(status, "OK")
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0].symbol, "BTCUSDT")
+
+
 
 class _Exchange:
     mode = "testnet"

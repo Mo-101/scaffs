@@ -19,9 +19,10 @@ done
 
 # Apply migrations
 if [ -d /app/migrations ]; then
-  for f in /app/migrations/*.sql; do
+  for f in $(ls /app/migrations/*.sql | sort); do
     [ -f "$f" ] || continue
-    PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -f "$f" >/dev/null 2>&1 || true
+    echo "[migration] Applying $f..."
+    PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" -f "$f" || true
   done
 fi
 

@@ -66,3 +66,8 @@ CREATE INDEX IF NOT EXISTS idx_live_fills_symbol_side ON paper_trading.live_fill
 ALTER TABLE paper_trading.trading_accounts ADD COLUMN IF NOT EXISTS strategy_actually_run TEXT;
 ALTER TABLE paper_trading.equity_history ADD COLUMN IF NOT EXISTS strategy_actually_run TEXT;
 ALTER TABLE paper_trading.paper_cycle_events ADD COLUMN IF NOT EXISTS strategy_actually_run TEXT;
+
+-- Update existing grid sessions to have strategy_id bounded_grid_v1
+UPDATE paper_trading.trading_accounts
+SET strategy_id = 'bounded_grid_v1', strategy_actually_run = 'bounded_grid_v1'
+WHERE worker_id LIKE '%grid%';

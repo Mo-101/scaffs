@@ -403,6 +403,8 @@ def _mirror_mark_to_store(session_id: str, mark: dict[str, Any]) -> None:
                 strategy_id = (
                     "periodic_equal_weight_rebalance"
                     if ("rebalance" in session_id or "control" in session_id or "candidate" in session_id)
+                    else "bounded_grid_v1"
+                    if "grid" in session_id
                     else "funding_rate_zscore"
                 )
                 actually_run = strategy_id

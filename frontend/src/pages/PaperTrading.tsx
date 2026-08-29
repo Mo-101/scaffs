@@ -56,7 +56,10 @@ const TAB_LABELS: Record<PaperTab, string> = { grid: "Grid Futures", timed: "Reb
 
 function classifySessionTab(s: PaperSessionSummary): PaperTab {
   const sessionId = s.session_id;
-  return isRetainedSessionId(sessionId) ? RETAINED_PAPER_SESSIONS[sessionId].tab : "timed";
+  if (isRetainedSessionId(sessionId)) return RETAINED_PAPER_SESSIONS[sessionId].tab;
+  if (sessionId.includes("grid") || s.session.strategy_type?.includes("grid")) return "grid";
+  if (sessionId.includes("morning") || s.session.strategy_type?.includes("zscore")) return "morning";
+  return "timed";
 }
 
 function sessionDisplayName(s: PaperSessionSummary): string {
@@ -1875,14 +1878,14 @@ export function PaperTrading() {
       )}
 
       {/* Morning Glory Dedicated Funding Z-Score Arbitrage Optimizer */}
-      {(activeTab === "morning" || s.session.strategy_type === "funding_rate_zscore" || s.session_id.includes("morning")) && (
+      {((activeTab === "morning" || s.session_id.includes("morning")) && !s.session_id.includes("grid") && activeTab !== "grid") && (
         <div className="mb-5">
           <MorningGloryOptimizer session={s} onRefresh={load} />
         </div>
       )}
 
-      {/* Grid Futures Dedicated Bounded Ladder Optimizer */}
-      {(activeTab === "grid" || s.session_id.includes("grid")) && (
+      {/* Grid Futures Dedicated Bounded Ladder Engine */}
+      {(activeTab === "grid" || s.session_id.includes("grid") || s.session.strategy_type === "bounded_grid_v1") && (
         <div className="mb-5">
           <GridFuturesOptimizer session={s} onRefresh={load} />
         </div>

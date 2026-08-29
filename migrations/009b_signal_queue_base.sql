@@ -62,5 +62,6 @@ CREATE TABLE IF NOT EXISTS paper_trading.live_fills (
 
 CREATE INDEX IF NOT EXISTS idx_live_fills_symbol_side ON paper_trading.live_fills (symbol, side);
 
--- Add strategy_actually_run column to paper_trading.trading_accounts
+-- Add strategy_actually_run column to paper_trading.trading_accounts and equity_history
 ALTER TABLE paper_trading.trading_accounts ADD COLUMN IF NOT EXISTS strategy_actually_run TEXT;
+ALTER TABLE paper_trading.equity_history ADD COLUMN IF NOT EXISTS strategy_actually_run TEXT;

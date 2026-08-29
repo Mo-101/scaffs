@@ -10,8 +10,10 @@ services:
       POSTGRES_DB: "${POSTGRES_DB:-mostar}"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
+    # Not published to the host: api/worker reach this over the internal
+    # compose network as "postgres:5432" (see docker-entrypoint.sh). A host
+    # port here isn't needed, and on a shared VPS it's one less thing to
+    # collide with whatever else happens to be listening on the host.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-mostar}"]
       interval: 5s

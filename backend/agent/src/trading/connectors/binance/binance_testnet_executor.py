@@ -138,12 +138,19 @@ def attach_protective_orders(
     quantity -- Binance closes whatever is actually open -- so this is
     correct whether the fill was full or partial.
 
-    Returns (orders, status, error):
-      - "NO_BOUNDARIES" if neither stop_loss nor take_profit was supplied
-        (grid/rebalance-style signals with no per-trade stop concept) -- a
-        no-op, not a failure.
-      - "PROTECTED" if every supplied boundary attached successfully.
-      - "PROTECTION_FAILED" if one or more failed.
+    Missing boundaries are synthesized from mark price, so both are normally
+    requested even for grid/rebalance-style signals that carry no per-trade
+    stop concept.
+
+    Returns (orders, status, error), where status reflects the exchange's
+    state after the attempt rather than the outcome of the placement calls:
+      - "PROTECTED" if every requested boundary is resting on the exchange,
+        including when this call's own placement was rejected as a duplicate
+        because the reconciler had already attached it.
+      - "PROTECTION_FAILED" if a requested boundary is absent, or if the
+        exchange could not be queried to confirm either way (fail closed).
+    ``orders`` is the set of closePosition orders actually observed on the
+    exchange, falling back to whatever this call placed if none were read.
     """
     from decimal import Decimal
     from src.trading.protection_math import protection_levels
@@ -183,29 +190,72 @@ def attach_protective_orders(
         )
 
     error_parts: list[str] = []
-    sl_res = None
     if sl is not None:
         try:
-            sl_res = place_protective("STOP_MARKET", sl, "_sl")
-            protective_orders.append(sl_res)
+            protective_orders.append(place_protective("STOP_MARKET", sl, "_sl"))
         except Exception as exc:
-            error_parts.append(f"SL failed: {exc}")
+            error_parts.append(f"SL placement returned: {exc}")
 
     if tp is not None:
         try:
-            tp_res = place_protective("TAKE_PROFIT_MARKET", tp, "_tp")
-            protective_orders.append(tp_res)
+            protective_orders.append(place_protective("TAKE_PROFIT_MARKET", tp, "_tp"))
         except Exception as exc:
-            error_parts.append(f"TP failed: {exc}")
-            # Fail-closed rollback: cancel SL if TP failed so position doesn't survive with partial protection
-            if sl_res and sl_res.get("algo_id"):
-                try:
-                    client.cancel_algo_order(symbol, algo_id=sl_res["algo_id"])
-                except Exception as cancel_exc:
-                    error_parts.append(f"SL rollback cancel failed: {cancel_exc}")
+            error_parts.append(f"TP placement returned: {exc}")
 
-    status = "PROTECTED" if (not error_parts and len(protective_orders) == 2) else "PROTECTION_FAILED"
-    return protective_orders, status, "; ".join(error_parts) if error_parts else None
+    # Status is decided by what is actually resting on the exchange, never by
+    # which placement calls threw -- an error and the exchange's state are not
+    # the same fact. PositionReconciler attaches protection for the same
+    # position, so a placement here can legitimately fail with -4130 ("an open
+    # stop or take profit order with GTE and closePosition in the direction is
+    # existing") while that position is already fully covered. The previous
+    # version inferred status from the exceptions and then "rolled back" by
+    # cancelling the SL it had just placed whenever the TP call raised -- so a
+    # -4130 saying "protection already exists" could strip protection off a
+    # live position. Rollback is gone: if cover is missing, the caller retries
+    # (PROTECTION_FAILED is retryable, not terminal) and the reconciler also
+    # repairs it, both of which are safe when placement is idempotent.
+    exit_side = "SELL" if econ_side == "LONG" else "BUY"
+    try:
+        live_algos = client.get_open_algo_orders(symbol=symbol)
+    except Exception as exc:
+        # Cannot observe the exchange -> cannot claim the position is covered.
+        error_parts.append(f"protection verification failed: {exc}")
+        return protective_orders, "PROTECTION_FAILED", "; ".join(error_parts)
+
+    def _resting(order_type_fragment: str) -> bool:
+        for o in live_algos:
+            if str(o.get("side", "")).upper() != exit_side:
+                continue
+            if str(o.get("closePosition", "")).lower() not in ("true", "1"):
+                continue
+            order_type = str(
+                o.get("orderType") or o.get("type") or o.get("origType") or o.get("algoType") or ""
+            ).upper()
+            if order_type_fragment in order_type:
+                return True
+        return False
+
+    has_sl = _resting("STOP")
+    has_tp = _resting("TAKE_PROFIT")
+
+    observed = [
+        o for o in live_algos
+        if str(o.get("side", "")).upper() == exit_side
+        and str(o.get("closePosition", "")).lower() in ("true", "1")
+    ]
+
+    missing = []
+    if sl is not None and not has_sl:
+        missing.append("STOP_MARKET")
+    if tp is not None and not has_tp:
+        missing.append("TAKE_PROFIT_MARKET")
+
+    if not missing:
+        # Exchange confirms cover; placement errors were duplicates/races.
+        return observed or protective_orders, "PROTECTED", None
+
+    error_parts.append("unprotected on exchange: " + ", ".join(missing))
+    return observed or protective_orders, "PROTECTION_FAILED", "; ".join(error_parts)
 
 
 class BinanceTestnetExecutor:

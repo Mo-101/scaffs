@@ -114,6 +114,11 @@ def test_submit_rejects_oversized_intent(tmp_path, monkeypatch):
 
 def test_execution_enabled_true_submits_real(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_ENABLED", "true")
+    # Explicit: this test asserts a live submission, so it must permit new
+    # entries. Without this the project .env (loaded with override=False by
+    # market_data_sync) supplies NEW_ENTRIES_ENABLED=false and the kill switch
+    # correctly halts the order before it reaches the matching engine.
+    monkeypatch.setenv("NEW_ENTRIES_ENABLED", "true")
     monkeypatch.setenv("MAX_TRADE_NOTIONAL_USDT", "100000")
     monkeypatch.setenv("MAX_POSITION_NOTIONAL_USDT", "100000")
     monkeypatch.setenv("MIN_AVAILABLE_BALANCE_USDT", "1")
@@ -130,8 +135,57 @@ def test_execution_enabled_true_submits_real(tmp_path, monkeypatch):
     assert (tmp_path / "executions.jsonl").exists()
 
 
+def test_new_entries_disabled_halts_before_the_matching_engine(tmp_path, monkeypatch):
+    """The kill switch must stop the order, not merely label it.
+
+    NEW_ENTRIES_ENABLED lived in .env and in every deploy script while no code
+    read it, so setting it false halted nothing: twelve entries dispatched in
+    one hour on 2026-08-30 while the running container reported false. The
+    check sits at the last common submission boundary, so no entry route can
+    route around it.
+    """
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("NEW_ENTRIES_ENABLED", "false")
+    monkeypatch.setenv("MAX_TRADE_NOTIONAL_USDT", "100000")
+    monkeypatch.setenv("MAX_POSITION_NOTIONAL_USDT", "100000")
+    monkeypatch.setenv("MIN_AVAILABLE_BALANCE_USDT", "1")
+    monkeypatch.setenv("MAX_MARKET_DATA_AGE_SECONDS", "1000000")
+
+    client = _mock_client()
+    executor = BinanceTestnetExecutor(client=client)
+    result = executor.submit(_minimal_intent(), session_dir=tmp_path)
+
+    assert result.status == "NEW_ENTRIES_DISABLED"
+    assert client.place_order.called is False, "kill switch let an order reach the exchange"
+
+
+def test_new_entries_disabled_still_allows_reduce_only(tmp_path, monkeypatch):
+    """Halting new risk must never trap an open position.
+
+    Closing and protecting an existing position has to keep working while
+    entries are halted, so reduce-only traffic is exempt from the switch.
+    """
+    monkeypatch.setenv("EXECUTION_ENABLED", "true")
+    monkeypatch.setenv("NEW_ENTRIES_ENABLED", "false")
+    monkeypatch.setenv("MAX_TRADE_NOTIONAL_USDT", "100000")
+    monkeypatch.setenv("MAX_POSITION_NOTIONAL_USDT", "100000")
+    monkeypatch.setenv("MIN_AVAILABLE_BALANCE_USDT", "1")
+    monkeypatch.setenv("MAX_MARKET_DATA_AGE_SECONDS", "1000000")
+
+    client = _mock_client()
+    executor = BinanceTestnetExecutor(client=client)
+    result = executor.submit(_minimal_intent(reduce_only=True), session_dir=tmp_path)
+
+    assert result.status != "NEW_ENTRIES_DISABLED"
+
+
 def test_live_submission_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_ENABLED", "true")
+    # Explicit: this test asserts a live submission, so it must permit new
+    # entries. Without this the project .env (loaded with override=False by
+    # market_data_sync) supplies NEW_ENTRIES_ENABLED=false and the kill switch
+    # correctly halts the order before it reaches the matching engine.
+    monkeypatch.setenv("NEW_ENTRIES_ENABLED", "true")
     monkeypatch.setenv("MAX_TRADE_NOTIONAL_USDT", "100000")
     monkeypatch.setenv("MAX_POSITION_NOTIONAL_USDT", "100000")
     monkeypatch.setenv("MIN_AVAILABLE_BALANCE_USDT", "1")

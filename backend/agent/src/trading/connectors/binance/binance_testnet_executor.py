@@ -416,6 +416,35 @@ class BinanceTestnetExecutor:
         if host != "testnet.binancefuture.com":
             raise RuntimeError("STEP5_REQUIRES_TESTNET_HOST")
 
+        # New-entry kill switch, enforced here because this is the last common
+        # boundary before a new entry reaches the matching engine: bulk Idim
+        # sync, UI dispatch and the direct /binance-testnet/order endpoint all
+        # funnel through dispatch_queued_signal into this method, so a future
+        # caller cannot route around it. Reduce-only is exempt -- halting new
+        # risk must not block closing a position that is already open.
+        from src.trading.entry_gate import (
+            NEW_ENTRIES_DISABLED_STATUS,
+            new_entries_enabled,
+            new_entry_block_reason,
+        )
+
+        if not pre_trade_intent.reduce_only and not new_entries_enabled():
+            reason = new_entry_block_reason()
+            logger.warning("Entry blocked for %s: %s", pre_trade_intent.symbol, reason)
+            result = ExecutionResult(
+                intent_id=intent.intent_id,
+                status=NEW_ENTRIES_DISABLED_STATUS,
+                exchange="binance",
+                environment="testnet",
+                error=reason,
+                target_notional=float(intent.notional) if intent.notional is not None else None,
+                actual_notional=float(pre_trade_intent.quantity)
+                * float(pre_trade_intent.market_snapshot.mark_price),
+                leverage=float(pre_trade_intent.requested_leverage),
+            )
+            _persist_result(session_dir, result)
+            return result
+
         # idempotency: do not resubmit an already live-submitted intent
         if session_dir is not None:
             exec_path = session_dir / "executions.jsonl"

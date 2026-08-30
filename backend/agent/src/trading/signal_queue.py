@@ -941,7 +941,7 @@ class SignalQueueManager:
         if symbol_block:
             criteria["source_symbol"] = symbol
             criteria["exchange_symbol"] = None
-            self._record_criteria(queue_id, claim_token, criteria)
+            _record_criteria(queue_id, claim_token, criteria)
             logger.warning("Symbol rejected for signal [%s]: %s", queue_id, symbol_reason)
             _write_terminal(symbol_block, symbol_reason)
             return {"ok": False, "status": symbol_block, "queue_id": queue_id, "reason": symbol_reason}

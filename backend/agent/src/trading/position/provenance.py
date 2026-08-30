@@ -8,13 +8,15 @@ from typing import Any, Optional
 
 import psycopg
 
+from src.db_dsn import resolve_dsn
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DSN = "dbname=mostar port=5433"
 
 
 def _dsn(dsn: Optional[str] = None) -> str:
-    return dsn or os.getenv("VIBE_PAPER_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_DSN
+    return resolve_dsn(dsn, DEFAULT_DSN)
 
 
 def _norm_symbol(symbol: str) -> str:

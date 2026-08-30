@@ -22,18 +22,9 @@ from src.trading.signal_queue import SignalQueueManager
 logger = logging.getLogger(__name__)
 
 def _get_default_dsn() -> str:
-    # Prefer VIBE_PAPER_DATABASE_URL if set by docker-entrypoint.sh
-    vibe_dsn = os.getenv("VIBE_PAPER_DATABASE_URL")
-    if vibe_dsn:
-        return vibe_dsn
-    env_dsn = os.getenv("DATABASE_URL", "")
-    # If DATABASE_URL is a host socket URL like /var/run/postgresql, inside Docker that will fail.
-    if "/var/run/postgresql" in env_dsn:
-        # If running inside Docker container (e.g. postgres host is resolvable or VIBE_TRADING_TRUST_DOCKER_LOOPBACK set)
-        if os.getenv("VIBE_TRADING_TRUST_DOCKER_LOOPBACK") or os.path.exists("/.dockerenv"):
-            return "postgresql://postgres:mostar@postgres:5432/mostar"
-        return "postgresql://postgres:mostar@127.0.0.1:5433/mostar"
-    return env_dsn or "postgresql://postgres:mostar@postgres:5432/mostar"
+    from src.db_dsn import resolve_dsn
+
+    return resolve_dsn()
 
 DEFAULT_IDIM_API = os.getenv("IDIM_API_URL", "http://127.0.0.1:41050")
 

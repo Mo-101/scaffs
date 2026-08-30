@@ -74,7 +74,9 @@ def _paper_dsn() -> str:
     Note the database is ``mostar`` -- MoStar is the host/database platform.
     Scaffs is the tenant application. Idim Ikang is the upstream producer.
     """
-    return os.getenv("VIBE_PAPER_DATABASE_URL", "dbname=mostar port=5433")
+    from src.db_dsn import resolve_dsn
+
+    return resolve_dsn(default="dbname=mostar port=5433")
 
 
 def _clamp_limit(limit: int, default: int = 50) -> int:

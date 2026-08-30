@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 import psycopg
 
+from src.db_dsn import resolve_dsn
 from src.trading.connectors.binance.futures_sdk import (
     BinanceFuturesClient,
     BinanceFuturesConfig,
@@ -80,7 +81,7 @@ class PositionRiskResolver:
         dsn: Optional[str] = None,
     ) -> None:
         self.client = client
-        self.dsn = dsn or os.getenv("VIBE_PAPER_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_DSN
+        self.dsn = resolve_dsn(dsn, DEFAULT_DSN)
 
     def _find_origin_signal(
         self,

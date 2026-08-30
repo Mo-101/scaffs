@@ -18,6 +18,7 @@ from typing import Any, Optional
 import psycopg
 from psycopg.types.json import Json
 
+from src.db_dsn import resolve_dsn
 from src.trading.connectors.binance.futures_sdk import (
     BinanceFuturesClient,
     BinanceFuturesConfig,
@@ -150,7 +151,7 @@ class PositionReconciler:
         ledger: Optional[ProtectionLedger] = None,
     ) -> None:
         self.client = client or get_binance_futures_client(BinanceFuturesConfig.from_env())
-        self.dsn = dsn or os.getenv("VIBE_PAPER_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_DSN
+        self.dsn = resolve_dsn(dsn, DEFAULT_DSN)
         self.ledger = ledger or ProtectionLedger()
 
     def _matching_algo_orders(

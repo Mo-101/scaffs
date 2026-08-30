@@ -13,6 +13,8 @@ from typing import Any, Optional
 import psycopg
 from psycopg.types.json import Json
 
+from src.db_dsn import resolve_dsn
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DSN = "dbname=mostar port=5433"
@@ -49,7 +51,7 @@ class MarketDataStore:
     """Compact, single-row-per-snapshot store for all exchange market data."""
 
     def __init__(self, dsn: Optional[str] = None) -> None:
-        self.dsn = dsn or os.getenv("VIBE_PAPER_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_DSN
+        self.dsn = resolve_dsn(dsn, DEFAULT_DSN)
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:

@@ -29,15 +29,9 @@ logger = logging.getLogger(__name__)
 _PAPER_SESSIONS_DIR = Path(__file__).resolve().parents[2] / "paper_sessions"
 
 def _get_default_dsn() -> str:
-    vibe_dsn = os.getenv("VIBE_PAPER_DATABASE_URL")
-    if vibe_dsn:
-        return vibe_dsn
-    env_dsn = os.getenv("DATABASE_URL", "")
-    if "/var/run/postgresql" in env_dsn:
-        if os.getenv("VIBE_TRADING_TRUST_DOCKER_LOOPBACK") or os.path.exists("/.dockerenv"):
-            return "postgresql://postgres:mostar@postgres:5432/mostar"
-        return "postgresql://postgres:mostar@127.0.0.1:5433/mostar"
-    return env_dsn or "postgresql://postgres:mostar@postgres:5432/mostar"
+    from src.db_dsn import resolve_dsn
+
+    return resolve_dsn()
 
 DEFAULT_DSN = _get_default_dsn()
 
@@ -419,7 +413,12 @@ class SignalQueueManager:
     """Manages signal queuing, quality gating, collision resolution, and execution."""
 
     def __init__(self, dsn: Optional[str] = None):
-        self.dsn = dsn or os.getenv("VIBE_PAPER_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_DSN
+        # Resolve through _get_default_dsn(), never raw DATABASE_URL: it already
+        # applies the VIBE_PAPER_DATABASE_URL -> DATABASE_URL precedence AND
+        # rewrites the host's "/var/run/postgresql" socket DSN, which does not
+        # exist inside the container. Reading DATABASE_URL directly here
+        # bypassed that rewrite and made every connect fail in Docker.
+        self.dsn = dsn or _get_default_dsn()
 
     def enqueue_signal(
         self,

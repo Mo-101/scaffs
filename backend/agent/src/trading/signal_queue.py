@@ -36,6 +36,7 @@ def _get_default_dsn() -> str:
 DEFAULT_DSN = _get_default_dsn()
 
 from src.trading.strategy_binding import allowed_workers
+from src.trading.symbol_registry import resolve_market
 
 _ARCHIVE_PRODUCERS = {"archive", "archived", "backfill", "historical", "research_archive"}
 _ARCHIVE_CRITERIA_FLAGS = {"archive", "archived", "backfill", "historical"}
@@ -865,6 +866,28 @@ class SignalQueueManager:
                     )
                 conn.commit()
 
+        def _record_criteria(qid: str, token: str, payload: Dict[str, Any]) -> None:
+            """Persist criteria_vector while still holding the claim.
+
+            Used to save symbol provenance (source_symbol / exchange_symbol)
+            before a terminal write, so a rejected row still says what was
+            asked for and what the exchange actually calls it.
+            """
+            try:
+                with psycopg.connect(self.dsn) as conn, conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE paper_trading.signal_queue
+                        SET criteria_vector = %s
+                        WHERE id = %s AND status = 'CLAIMED' AND claim_token = %s;
+                        """,
+                        (Json(payload), qid, token),
+                    )
+                    conn.commit()
+            except Exception as exc:
+                # Provenance is diagnostic; never let it block the decision.
+                logger.warning("Could not persist criteria for signal [%s]: %s", qid, exc)
+
         # 2. Position Collision Check
         can_exec, collision_note, collision_state = self.check_position_collision(clean_sym, trade_side)
         if not can_exec:
@@ -903,6 +926,31 @@ class SignalQueueManager:
 
         # 4. Compute price and requested leverage
         client = get_binance_futures_client()
+
+        # 4a. Exchange-metadata allowlist, before any exchange mutation or
+        # even a ticker fetch. A symbol is validated against exchangeInfo, not
+        # a character-class regex: Binance lists Chinese-character perpetuals,
+        # so encoding proves nothing. What blocked 龙虾USDT and ZKCUSDT alike
+        # was status=PENDING_TRADING -- set_margin_type fails on a listed but
+        # unopened market and surfaced as a misleading MARGIN_MODE_MISMATCH
+        # after collision and sizing work had already run. Both terminal
+        # statuses are absent from the retry-eligible list in
+        # idim_feed_bridge.sync_and_enqueue_signals, so an unlisted or
+        # not-yet-trading symbol stops re-entering the queue every poll.
+        market, symbol_block, symbol_reason = resolve_market(client, clean_sym)
+        if symbol_block:
+            criteria["source_symbol"] = symbol
+            criteria["exchange_symbol"] = None
+            self._record_criteria(queue_id, claim_token, criteria)
+            logger.warning("Symbol rejected for signal [%s]: %s", queue_id, symbol_reason)
+            _write_terminal(symbol_block, symbol_reason)
+            return {"ok": False, "status": symbol_block, "queue_id": queue_id, "reason": symbol_reason}
+
+        # Persist what was asked for alongside what the exchange actually
+        # calls it, so a later audit can tell a rename from a bad signal.
+        criteria["source_symbol"] = symbol
+        criteria["exchange_symbol"] = str(market.get("symbol"))
+
         ticker_px = client.get_ticker_price(clean_sym)
         if ticker_px <= 0:
             ticker_px = 1.0

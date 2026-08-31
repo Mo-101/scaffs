@@ -470,6 +470,9 @@ _DEFAULT_LOOPBACK_HOSTS = frozenset({
     "127.0.0.1",
     "::1",
     "[::1]",
+    "scaffs.mostarindustries.com",
+    "scaffs.mostarindustries.co",
+    "scarffs.mostarindustries.co",
 })
 
 

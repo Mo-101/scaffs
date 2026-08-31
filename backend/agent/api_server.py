@@ -809,7 +809,7 @@ def _auth_credential_from_header_or_query(
 
 
 def _is_loopback_origin(origin: str) -> bool:
-    """Return whether a browser Origin header names a loopback web UI."""
+    """Return whether a browser Origin header names a loopback web UI or trusted domain host."""
     try:
         parsed = urllib.parse.urlsplit(origin)
     except ValueError:
@@ -817,7 +817,7 @@ def _is_loopback_origin(origin: str) -> bool:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return False
     host = parsed.hostname.rstrip(".").lower()
-    if host == "localhost":
+    if host in _DEFAULT_LOOPBACK_HOSTS or host in _EXTRA_LOOPBACK_HOSTS:
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
@@ -835,17 +835,21 @@ def _origin_matches_request_host(origin: str, request: Request) -> bool:
         return False
 
     origin_host = parsed.hostname.rstrip(".").lower()
-    origin_port = parsed.port
     request_host = _host_without_port(request.headers.get("host", ""))
     if origin_host != request_host:
         return False
 
+    origin_port = parsed.port
     if origin_port is None:
         origin_port = 443 if parsed.scheme == "https" else 80
+
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    request_scheme = forwarded_proto if forwarded_proto else request.url.scheme
     request_port = request.url.port
-    if request_port is None:
-        request_port = 443 if request.url.scheme == "https" else 80
-    return origin_port == request_port
+    if request_port is None or forwarded_proto:
+        request_port = 443 if request_scheme == "https" else 80
+
+    return origin_port == request_port or origin_host in _DEFAULT_LOOPBACK_HOSTS or origin_host in _EXTRA_LOOPBACK_HOSTS
 
 
 def _reject_cross_site_browser_request(request: Request) -> None:

@@ -25,6 +25,11 @@ def get_git_sha() -> str:
     return os.getenv("GIT_SHA", "unknown_sha")
 
 
+def get_container_image_digest() -> str:
+    """Resolve immutable container image digest for deployment provenance."""
+    return os.getenv("CONTAINER_IMAGE_DIGEST") or os.getenv("IMAGE_DIGEST") or "sha256:local_dev_build"
+
+
 def from_idim(
     signal: Dict[str, Any],
     strategy_version: str = "idim_v1",

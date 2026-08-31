@@ -38,6 +38,7 @@ class SignalProposal:
     side: str  # "BUY" or "SELL"
     generated_at: datetime
     valid_until: datetime
+    image_digest: str = "unknown_digest"
     raw_score: Optional[float] = None
     expected_r: Optional[float] = None
     expected_r_lower: Optional[float] = None

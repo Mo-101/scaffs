@@ -45,7 +45,17 @@ _ARCHIVE_CRITERIA_FLAGS = {"archive", "archived", "backfill", "historical"}
 # is rejected outright rather than silently trusted -- this is a proportionate,
 # in-file tightening; real cryptographic producer trust would require a
 # per-caller identity in the auth layer, which does not exist today.
-_KNOWN_PRODUCERS = {"scaffs_picker", "scaffs_native", "idim_ikang", "scaffs_manual"}
+_KNOWN_PRODUCERS = {
+    "scaffs_picker",
+    "scaffs_native",
+    "idim_ikang",
+    "scaffs_manual",
+    "grid_v3",
+    "grid_futures_5x",
+    "grid_futures_10x",
+    "morning_glory",
+    "morning_glory_futures",
+}
 
 # Absolute admission floor, mirrored from paper_session_routes._ABSOLUTE_SCORE_FLOOR.
 # Reused as the fixed "ideal worst" anchor for the batch-independent quality score.
@@ -519,6 +529,39 @@ class SignalQueueManager:
                     )
                     res = cur.fetchone()
                 con.commit()
+
+                # Phase 1 Hybrid Portfolio Allocator Proposal Hook
+                try:
+                    from src.trading.hybrid import (
+                        from_idim,
+                        from_picker,
+                        from_grid,
+                        from_morning_glory,
+                        HybridProposalRouter,
+                    )
+
+                    prod = str(producer).lower()
+                    payload = {
+                        "symbol": clean_sym,
+                        "side": clean_side,
+                        "score": raw_score,
+                        "timeframe": timeframe,
+                        "criteria": crit,
+                        "source_signal_id": source_signal_id,
+                    }
+
+                    if "idim" in prod:
+                        prop = from_idim(payload)
+                    elif "grid" in prod:
+                        prop = from_grid(payload)
+                    elif "morning" in prod or "glory" in prod or "funding" in prod:
+                        prop = from_morning_glory(payload)
+                    else:
+                        prop = from_picker(payload)
+
+                    HybridProposalRouter(dsn=self.dsn).submit_proposal(prop)
+                except Exception as prop_exc:
+                    logger.warning("Could not log Phase 1 hybrid proposal for producer %s: %s", producer, prop_exc)
             except psycopg_errors.UniqueViolation:
                 # Must roll back explicitly: idim_feed_bridge shares one
                 # connection across its whole ingestion batch, and a failed

@@ -1995,6 +1995,20 @@ def register_paper_session_routes(
         res["auto_dispatch_applied"] = auto_dispatch
         return res
 
+    @app.get("/paper-sessions/hybrid/scoreboard", dependencies=auth_dependencies)
+    async def get_hybrid_scoreboard_endpoint():
+        """Retrieve real-time engine performance metrics grouped by engine and regime."""
+        from src.trading.hybrid import HybridProposalRouter
+
+        try:
+            router = HybridProposalRouter()
+            scoreboard = await run_in_threadpool(router.get_scoreboard)
+            return {"ok": True, "scoreboard": scoreboard}
+        except Exception as exc:
+            logger.error("Failed to query hybrid scoreboard: %s", exc)
+            raise HTTPException(status_code=500, detail="Failed to query hybrid scoreboard") from exc
+
+
     # -------------------------------------------------------------------------
     # Wildcard session routes LAST, so no literal path above can be shadowed.
     # -------------------------------------------------------------------------

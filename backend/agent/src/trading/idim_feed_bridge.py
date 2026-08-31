@@ -178,6 +178,14 @@ class IdimFeedBridge:
                         "reason_trace": sig.get("reason_trace"),
                     }
 
+                    # Submit proposal to Phase 1 Hybrid Portfolio Allocator (Shadow Ledger)
+                    try:
+                        from src.trading.hybrid import from_idim, HybridProposalRouter
+                        prop = from_idim(sig)
+                        HybridProposalRouter(dsn=self.dsn).submit_proposal(prop)
+                    except Exception as prop_err:
+                        logger.warning("Could not submit Phase 1 hybrid proposal for signal %s: %s", sig_id, prop_err)
+
                     res = self.queue_mgr.enqueue_signal(
                         symbol=symbol,
                         side=side,

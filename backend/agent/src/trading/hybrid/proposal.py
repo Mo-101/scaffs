@@ -1,4 +1,9 @@
-"""SignalProposal data structure and validation for Scaffs Hybrid Portfolio Allocator."""
+"""SignalProposal data structure and validation for Scaffs Hybrid Portfolio Allocator.
+
+Phase 2: observation_source is explicit (no silent default), valid_until is
+entry freshness only, max_hold_seconds controls position holding period,
+and legs support multi-leg proposals.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,9 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from .proposal_leg import ProposalLeg
 
 # Valid strategy families for alpha proposal engines
 VALID_STRATEGY_FAMILIES = {
@@ -25,6 +32,14 @@ PRODUCER_FAMILY_MAP = {
     "morning_glory": "funding_arbitrage",
 }
 
+# Valid observation sources — must be explicit at creation, never silent
+VALID_OBSERVATION_SOURCES = {
+    "LIVE_SHADOW",       # Genuine market-tracked proposal
+    "ACCEPTANCE_TEST",   # Deliberate test fixture
+    "BACKFILL",          # Historical backfill
+    "SYNTHETIC",         # Synthetic/simulated
+}
+
 
 @dataclass
 class SignalProposal:
@@ -37,7 +52,8 @@ class SignalProposal:
     symbol: str
     side: str  # "BUY" or "SELL"
     generated_at: datetime
-    valid_until: datetime
+    valid_until: datetime               # Entry freshness: "too stale to ENTER after this"
+    observation_source: str             # EXPLICIT — no default. Every call site must declare.
     image_digest: str = "unknown_digest"
     raw_score: Optional[float] = None
     expected_r: Optional[float] = None
@@ -53,12 +69,21 @@ class SignalProposal:
     correlation_group: Optional[str] = None
     shadow_only: bool = True
     native_payload: Dict[str, Any] = field(default_factory=dict)
+
+    # Phase 2: Holding period (separate from entry freshness)
+    max_hold_seconds: Optional[int] = None          # None = engine default
+    exit_policy_version: str = "v1_tp_sl_time"       # Engine-specific exit policy
+
+    # Phase 2: Multi-leg support
+    legs: List[ProposalLeg] = field(default_factory=list)
+
     proposal_id: uuid.UUID = field(default_factory=uuid.uuid4)
     idempotency_key: str = ""
 
     def __post_init__(self) -> None:
         self.symbol = self.symbol.upper().strip()
         self.side = self.side.upper().strip()
+        self.observation_source = self.observation_source.upper().strip()
 
         if self.strategy_family not in VALID_STRATEGY_FAMILIES:
             raise ValueError(
@@ -70,6 +95,13 @@ class SignalProposal:
 
         if self.valid_until <= self.generated_at:
             raise ValueError("valid_until must be strictly after generated_at.")
+
+        if self.observation_source not in VALID_OBSERVATION_SOURCES:
+            raise ValueError(
+                f"Invalid observation_source '{self.observation_source}'. "
+                f"Must be one of {VALID_OBSERVATION_SOURCES}. "
+                "This field has no default — every call site must explicitly declare the source."
+            )
 
         if self.reliability is not None and not (0.0 <= self.reliability <= 1.0):
             raise ValueError("reliability must be between 0.0 and 1.0.")
@@ -92,6 +124,7 @@ class SignalProposal:
             "side": self.side,
             "generated_at": self.generated_at,
             "valid_until": self.valid_until,
+            "observation_source": self.observation_source,
             "raw_score": self.raw_score,
             "expected_r": self.expected_r,
             "expected_r_lower": self.expected_r_lower,

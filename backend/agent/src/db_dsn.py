@@ -20,7 +20,8 @@ import os
 from typing import Optional
 
 DOCKER_DSN = "postgresql://postgres:mostar@postgres:5432/mostar"
-HOST_DSN = "postgresql://postgres:mostar@127.0.0.1:5433/mostar"
+HOST_PORT = os.getenv("POSTGRES_HOST_PORT", "5434")
+HOST_DSN = f"postgresql://postgres:mostar@127.0.0.1:{HOST_PORT}/mostar"
 
 _HOST_SOCKET_MARKER = "/var/run/postgresql"
 

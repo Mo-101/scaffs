@@ -14,6 +14,8 @@ if [[ -n "${PYTHON:-}" ]]; then
   PYTHON_BIN="$PYTHON"
 elif [[ -x "$ROOT/.venv/bin/python" ]]; then
   PYTHON_BIN="$ROOT/.venv/bin/python"
+elif [[ -x "$ROOT/backend/agent/.venv/bin/python" ]]; then
+  PYTHON_BIN="$ROOT/backend/agent/.venv/bin/python"
 elif [[ -x "$ROOT/agent/.venv/bin/python" ]]; then
   PYTHON_BIN="$ROOT/agent/.venv/bin/python"
 else
@@ -159,7 +161,7 @@ start_backend() {
     printf "backend already reachable at %s (external)\n" "$(service_url backend)"
     return
   fi
-  start_service backend env PYTHONPATH="$ROOT/agent" "$PYTHON_BIN" -c 'import cli, sys; raise SystemExit(cli.main(sys.argv[1:]))' serve \
+  start_service backend env PYTHONPATH="$ROOT/backend/agent:$ROOT/agent:$ROOT" "$PYTHON_BIN" -c 'import cli, sys; raise SystemExit(cli.main(sys.argv[1:]))' serve \
     --host "$BACKEND_HOST" \
     --port "$BACKEND_PORT"
 }

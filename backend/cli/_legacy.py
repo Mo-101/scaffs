@@ -4430,12 +4430,18 @@ def _build_parser() -> argparse.ArgumentParser:
         _add_connector_profile_arg(p)
 
     # Alpha Zoo subcommands (registered via cli_handlers.add_subparser)
-    from src.factors.cli_handlers import add_subparser as _add_alpha_subparser
-    _add_alpha_subparser(subparsers)
+    try:
+        from src.factors.cli_handlers import add_subparser as _add_alpha_subparser
+        _add_alpha_subparser(subparsers)
+    except ImportError:
+        pass
 
     # Hypothesis Registry subcommands
-    from src.hypotheses.cli_handlers import add_subparser as _add_hypothesis_subparser
-    _add_hypothesis_subparser(subparsers)
+    try:
+        from src.hypotheses.cli_handlers import add_subparser as _add_hypothesis_subparser
+        _add_hypothesis_subparser(subparsers)
+    except ImportError:
+        pass
 
     return parser
 

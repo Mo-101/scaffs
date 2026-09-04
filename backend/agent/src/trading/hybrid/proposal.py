@@ -27,6 +27,8 @@ VALID_STRATEGY_FAMILIES = {
 # Known producers mapping to strategy families
 PRODUCER_FAMILY_MAP = {
     "idim_ikang": "directional",
+    "sigmalui": "directional",
+    "sigmalui_soul": "directional",
     "scaffs_picker": "momentum",
     "grid_v3": "mean_reversion",
     "morning_glory": "funding_arbitrage",

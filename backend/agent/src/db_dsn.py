@@ -119,6 +119,12 @@ def resolve_dsn(dsn: Optional[str] = None, default: Optional[str] = None) -> str
         return dsn
 
     explicit_env = os.getenv("VIBE_PAPER_DATABASE_URL") or os.getenv("DATABASE_URL")
+    if in_container() and explicit_env:
+        # A Unix-socket host path from the host environment is not mountable or reachable inside Docker.
+        if "host=/var/run/postgresql" in explicit_env or ("host=" not in explicit_env and "://" not in explicit_env):
+            logger.warning("Ignoring host Unix-socket DSN inside Docker container: %s", explicit_env)
+            explicit_env = None
+
     if explicit_env:
         assert_safe_test_database(explicit_env)
         verify_reachable(explicit_env)

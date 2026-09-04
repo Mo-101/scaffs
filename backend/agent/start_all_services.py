@@ -172,6 +172,58 @@ def run_signal_queue_reconciler(poll_interval_sec: int = 10) -> None:
         time.sleep(poll_interval_sec)
 
 
+def run_sigmalui_ingestion(poll_interval_sec: int = 30) -> None:
+    """Continuous background ingestion from SigmaLui Soul Giver feed.
+    Validates quality gates, drops stale/unverified/mock signals, and
+    enqueues into paper_trading.signal_queue.
+    """
+    from src.trading.sigmalui_feed_bridge import SigmaluiFeedBridge
+
+    api_url = os.getenv("SIGMALUI_API_URL", "http://host-gateway:3000")
+    notional_usd = float(os.getenv("SIGMALUI_AUTO_DISPATCH_NOTIONAL", "25.0"))
+    auto_dispatch = os.getenv("SIGMALUI_AUTO_DISPATCH", "false").lower() in ("1", "true", "yes")
+    min_score = float(os.getenv("SIGMALUI_MIN_SCORE", "60.0"))
+    host_header = os.getenv("SIGMALUI_HOST_HEADER", "")
+    node_name = os.getenv("SIGMALUI_NODE_NAME", os.getenv("APP_NAME", "Scaffs_Execution_Node"))
+    node_tier = os.getenv("SIGMALUI_NODE_TIER", "PREMIUM_95")
+
+    logger.info(
+        "Starting SigmaLui Soul Giver ingestion worker (url=%s, interval=%ds, notional=$%.2f, auto_dispatch=%s)",
+        api_url, poll_interval_sec, notional_usd, auto_dispatch,
+    )
+    bridge = SigmaluiFeedBridge(
+        api_url=api_url,
+        host_header=host_header,
+        node_name=node_name,
+        node_tier=node_tier,
+    )
+    try:
+        bridge.register_node()
+    except Exception as exc:
+        logger.warning("SigmaLui node registration note: %s", exc)
+
+    cycle = 0
+    while True:
+        cycle += 1
+        try:
+            res = bridge.sync_and_enqueue_signals(
+                auto_dispatch=auto_dispatch,
+                notional_usd=notional_usd,
+                min_score=min_score,
+            )
+            examined = res.get("signals_examined", 0)
+            enqueued = res.get("enqueued_count", 0)
+            dispatched = res.get("dispatched_count", 0)
+            if enqueued > 0 or dispatched > 0:
+                logger.info("SigmaLui cycle #%d: examined=%d, enqueued=%d, dispatched=%d", cycle, examined, enqueued, dispatched)
+            else:
+                logger.info("SigmaLui cycle #%d: examined=%d, 0 new (deduped/resting)", cycle, examined)
+        except Exception as exc:
+            logger.warning("SigmaLui ingestion cycle #%d failed: %s", cycle, exc)
+
+        time.sleep(poll_interval_sec)
+
+
 def main() -> None:
     initialize_all_sessions()
 
@@ -212,6 +264,20 @@ def main() -> None:
             "fill-detected, protected, or TTL-cancelled after dispatch. Do not disable "
             "this in a live/testnet environment."
         )
+
+    sigmalui_enabled = os.getenv("SIGMALUI_INGESTION_ENABLED", "true").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if sigmalui_enabled:
+        sigmalui_interval = int(os.getenv("SIGMALUI_POLL_INTERVAL_SECONDS", "30"))
+        sigmalui_thread = threading.Thread(
+            target=run_sigmalui_ingestion,
+            args=(sigmalui_interval,),
+            name="Worker-sigmalui-ingestion",
+            daemon=True,
+        )
+        sigmalui_thread.start()
+        threads.append(sigmalui_thread)
 
     logger.info("All %d paper trading worker services are live and running!", len(threads))
 

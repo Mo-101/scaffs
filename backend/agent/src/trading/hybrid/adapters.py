@@ -83,6 +83,87 @@ def from_idim(
     )
 
 
+def from_sigmalui(
+    signal: Dict[str, Any],
+    strategy_version: str = "sigmalui_v1",
+    git_sha: Optional[str] = None,
+    ttl_seconds: int = 600,
+) -> SignalProposal:
+    """Engine S Adapter: Convert SigmaLui Soul Giver directional signal.
+
+    SigmaLui payloads use asset/action/entryPrice/takeProfit1/stopLoss/topisScore
+    keys. Normalizes them into the canonical SignalProposal schema.
+    """
+    now = datetime.now(timezone.utc)
+    ts_val = signal.get("timestamp") or signal.get("ts") or signal.get("created_at") or signal.get("createdAt")
+    if isinstance(ts_val, str):
+        try:
+            generated_at = datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+        except ValueError:
+            generated_at = now
+    elif isinstance(ts_val, datetime):
+        generated_at = ts_val
+    else:
+        generated_at = now
+
+    valid_until = generated_at + timedelta(seconds=ttl_seconds)
+    pair = str(signal.get("futuresPair") or signal.get("asset") or signal.get("symbol") or "BTC-USDT")
+    pair = pair.replace("/", "").replace(".", "").replace("-", "")
+    # Drop common perpetual suffixes that are not part of Binance symbols.
+    for suffix in ("P", "PERP"):
+        if pair.upper().endswith(suffix):
+            pair = pair[: -len(suffix)]
+    pair = pair.upper()
+    side = str(signal.get("side") or signal.get("action") or "BUY").upper()
+    action = side
+    if action in ("STRONG_BUY", "BUY"):
+        side = "BUY"
+    elif action in ("STRONG_SELL", "SELL"):
+        side = "SELL"
+
+    score = float(signal.get("raw_score") or signal.get("score") or signal.get("topsisScore") or signal.get("confidencePct") or 50.0)
+    if score <= 1.0 and ("topsisScore" in signal or "topsis_score" in signal.get("criteria", {})):
+        score = score * 100.0
+
+    crit = signal.get("criteria") or signal
+    entry = float(
+        signal.get("entry") or signal.get("entryPrice") or signal.get("price")
+        or crit.get("entry") or crit.get("entryPrice") or 0.0
+    )
+    stop = float(
+        signal.get("stop_loss") or signal.get("stopLoss") or signal.get("sl")
+        or crit.get("stop_loss") or crit.get("stopLoss") or 0.0
+    )
+    target = float(
+        signal.get("take_profit") or signal.get("takeProfit1") or signal.get("target1")
+        or crit.get("take_profit") or crit.get("takeProfit1") or 0.0
+    )
+
+    stop_pct = abs(entry - stop) / entry if entry > 0 and stop > 0 else 0.012
+    target_pct = abs(target - entry) / entry if entry > 0 and target > 0 else 0.024
+    expected_r = target_pct / stop_pct if stop_pct > 0 else 2.0
+
+    return SignalProposal(
+        producer="sigmalui",
+        strategy_family="directional",
+        strategy_version=strategy_version,
+        git_sha=git_sha or get_git_sha(),
+        symbol=pair,
+        side=side,
+        generated_at=generated_at,
+        valid_until=valid_until,
+        observation_source="LIVE_SHADOW",
+        raw_score=score,
+        expected_r=expected_r,
+        stop_distance_pct=stop_pct,
+        target_distance_pct=target_pct,
+        regime=str(signal.get("regime") or signal.get("marketRegime") or "UNKNOWN"),
+        freshness_seconds=max(0.0, (now - generated_at).total_seconds()),
+        shadow_only=True,
+        native_payload=signal,
+    )
+
+
 def from_picker(
     signal: Dict[str, Any],
     strategy_version: str = "picker_v2",

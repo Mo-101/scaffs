@@ -52,6 +52,12 @@ MIN_REWARD_RISK = D(os.getenv("MIN_REWARD_RISK", "1.5"))
 POLICY_STOP_PCT = D(os.getenv("PROTECTION_STOP_PCT", "0.02"))
 POLICY_TAKE_PROFIT_PCT = D(os.getenv("PROTECTION_TAKE_PROFIT_PCT", "0.04"))
 
+#: A stop closer to entry than this is inside the tick/spread noise band and
+#: will be triggered by ordinary jitter rather than by the thesis failing.
+#: Geometrically valid, economically a coin flip -- so it is rejected and the
+#: pair falls back to policy distances.
+MIN_STOP_DISTANCE_PCT = D(os.getenv("MIN_STOP_DISTANCE_PCT", "0.0005"))
+
 
 class ProtectionInvariantError(Exception):
     """A protection pair is missing, geometrically invalid, or under-rewarded.
@@ -61,6 +67,28 @@ class ProtectionInvariantError(Exception):
     caller must flatten rather than treat the raise as a refusal to act --
     see the module docstring of the placement layer.
     """
+
+
+class InvertedStopError(ProtectionInvariantError):
+    """The stop sits on the wrong side of entry -- an instant stop-out.
+
+    Split out from the base class because this is the single most damaging
+    geometry error and deserves to be greppable in isolation: ONGUSDT lost
+    37.21 USDT to a long whose stop (0.117848) was above its own fill
+    (0.112020), and BNBUSDT lost 12.95 the same way.
+    """
+
+
+class InvertedTakeProfitError(ProtectionInvariantError):
+    """The take-profit sits on the wrong side of entry -- it can only lose."""
+
+
+class RewardRiskTooLowError(ProtectionInvariantError):
+    """Geometry is valid but the pair does not earn its risk."""
+
+
+class StopTooCloseError(ProtectionInvariantError):
+    """The stop is inside the noise band and would trigger on a tick."""
 
 
 @dataclass(frozen=True)
@@ -99,24 +127,46 @@ def validate_plan(plan: ProtectionPlan, side: Side) -> None:
     structural problem rather than a derived ratio.
     """
     if side == "LONG":
-        if not (plan.stop < plan.entry < plan.take_profit):
-            raise ProtectionInvariantError(
-                f"invalid LONG protection geometry: stop={plan.stop}, "
-                f"entry={plan.entry}, take_profit={plan.take_profit}; "
-                f"required stop < entry < take_profit"
+        if plan.stop >= plan.entry:
+            raise InvertedStopError(
+                f"INVERTED LONG STOP: stop ({plan.stop}) >= entry ({plan.entry}), "
+                f"difference +{plan.stop - plan.entry}. This opens and closes in the "
+                f"same breath; aborted."
+            )
+        if plan.take_profit <= plan.entry:
+            raise InvertedTakeProfitError(
+                f"INVERTED LONG TAKE PROFIT: take_profit ({plan.take_profit}) <= "
+                f"entry ({plan.entry}); the target can only be reached at a loss."
+            )
+        if plan.stop > plan.entry * (D("1") - MIN_STOP_DISTANCE_PCT):
+            raise StopTooCloseError(
+                f"LONG stop {plan.stop} is inside the noise band around entry "
+                f"{plan.entry}; must be at or below "
+                f"{plan.entry * (D('1') - MIN_STOP_DISTANCE_PCT)}"
             )
     elif side == "SHORT":
-        if not (plan.take_profit < plan.entry < plan.stop):
-            raise ProtectionInvariantError(
-                f"invalid SHORT protection geometry: take_profit={plan.take_profit}, "
-                f"entry={plan.entry}, stop={plan.stop}; "
-                f"required take_profit < entry < stop"
+        if plan.stop <= plan.entry:
+            raise InvertedStopError(
+                f"INVERTED SHORT STOP: stop ({plan.stop}) <= entry ({plan.entry}), "
+                f"difference -{plan.entry - plan.stop}. This opens and closes in the "
+                f"same breath; aborted."
+            )
+        if plan.take_profit >= plan.entry:
+            raise InvertedTakeProfitError(
+                f"INVERTED SHORT TAKE PROFIT: take_profit ({plan.take_profit}) >= "
+                f"entry ({plan.entry}); the target can only be reached at a loss."
+            )
+        if plan.stop < plan.entry * (D("1") + MIN_STOP_DISTANCE_PCT):
+            raise StopTooCloseError(
+                f"SHORT stop {plan.stop} is inside the noise band around entry "
+                f"{plan.entry}; must be at or above "
+                f"{plan.entry * (D('1') + MIN_STOP_DISTANCE_PCT)}"
             )
     else:
         raise ProtectionInvariantError(f"unknown side: {side!r}")
 
     if plan.reward_risk < MIN_REWARD_RISK:
-        raise ProtectionInvariantError(
+        raise RewardRiskTooLowError(
             f"protection reward:risk {plan.reward_risk:.4f} is below the required "
             f"{MIN_REWARD_RISK}; entry={plan.entry}, stop={plan.stop}, "
             f"take_profit={plan.take_profit}, source={plan.source}"

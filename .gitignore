@@ -4,6 +4,11 @@
 !.env.example
 *.env.local
 *.env.*.local
+# `*.env` matches ".env" but NOT ".env.clean" or ".env.bak-20260904" -- the
+# suffix goes the wrong way. Every backup or variant of .env holds the same
+# live API keys, so match them by prefix too, and keep the example tracked.
+.env.*
+!.env.example
 
 # Node & Dependencies
 node_modules/
@@ -25,6 +30,8 @@ __pycache__/
 *.so
 .Python
 env/
+env.bak-autoexec-20260830/
+env.clean/
 venv/
 ENV/
 .venv/

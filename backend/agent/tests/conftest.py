@@ -23,7 +23,17 @@ scratch/create_signal_queue_table.py pointed at mostar_test instead of mostar).
 import os
 import pytest
 
-os.environ["VIBE_PAPER_DATABASE_URL"] = "host=127.0.0.1 dbname=mostar_test port=5433 user=postgres password=mostar"
+# setdefault, not assignment: the point is to keep tests off the dev `mostar`
+# database, which any isolated DSN achieves. Hard-coding one connection style
+# also hard-codes an auth method, and a checkout whose local Postgres only
+# accepts unix-socket/peer auth (no TCP md5 for `postgres`) can then never run
+# these tests at all. Export VIBE_PAPER_DATABASE_URL to point at your own
+# `mostar_test` -- e.g. "host=/var/run/postgresql port=5433 user=<you>
+# dbname=mostar_test" -- and this default steps aside.
+os.environ.setdefault(
+    "VIBE_PAPER_DATABASE_URL",
+    "host=127.0.0.1 dbname=mostar_test port=5433 user=postgres password=mostar",
+)
 os.environ["API_ALLOWED_HOSTS"] = "testserver"
 
 

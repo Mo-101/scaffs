@@ -108,16 +108,11 @@ def _round_to_tick(value: float, tick: float) -> float:
     return round(value / tick) * tick
 
 
-def _validate_tp_sl(side: str, mark: float, sl: float | None, tp: float | None) -> tuple[float | None, float | None, str]:
-    """Return (sl, tp, status). Drop any boundary that is on the wrong side of mark."""
-    if side.upper() in ("BUY", "LONG"):
-        valid_sl = sl if sl is not None and sl < mark else None
-        valid_tp = tp if tp is not None and tp > mark else None
-        return valid_sl, valid_tp, "VALID"
-    # SELL/SHORT
-    valid_sl = sl if sl is not None and sl > mark else None
-    valid_tp = tp if tp is not None and tp < mark else None
-    return valid_sl, valid_tp, "VALID"
+# _validate_tp_sl was removed deliberately. It dropped whichever boundary sat
+# on the wrong side of mark and returned the other, which meant a caller could
+# open a position holding half a protection contract and let something else
+# author the other half. build_protection_plan replaces it: a pair is taken
+# whole or replaced whole. Do not reintroduce a per-leg validator here.
 
 
 def attach_protective_orders(
@@ -126,7 +121,7 @@ def attach_protective_orders(
     side: str,
     stop_loss: float | None,
     take_profit: float | None,
-    mark_price: float,
+    actual_entry: float,
     intent_id: str,
 ) -> tuple[list[dict[str, Any]], str, str | None]:
     """Attach STOP_MARKET (SL) / TAKE_PROFIT_MARKET (TP) closePosition orders.
@@ -153,24 +148,55 @@ def attach_protective_orders(
     exchange, falling back to whatever this call placed if none were read.
     """
     from decimal import Decimal
-    from src.trading.protection_math import protection_levels
+    from src.trading.protection_plan import (
+        ProtectionInvariantError,
+        assert_tick_safe,
+        build_protection_plan,
+    )
 
     tick = client.get_price_tick_size(symbol)
     econ_side = "LONG" if side.upper() in ("BUY", "LONG") else "SHORT"
 
-    # Synthesize missing boundaries if either SL or TP is absent
-    if stop_loss is None or take_profit is None:
-        synth = protection_levels(
-            entry=Decimal(str(mark_price)),
+    # One authority decides BOTH boundaries, validated against the price
+    # actually paid. The previous flow synthesized only a missing leg and then
+    # validated leg-by-leg against mark, dropping whichever was on the wrong
+    # side; PositionReconciler later repaired the gap from ProtectionPolicy.
+    # That produced positions whose stop came from the signal and whose target
+    # came from policy -- TAOUSDT ran an 8.4% stop against a 4% target. A plan
+    # is now taken whole or replaced whole; there is no mixed-provenance path.
+    try:
+        plan = build_protection_plan(
             side=econ_side,
-            tick_size=Decimal(str(tick)),
+            actual_entry=Decimal(str(actual_entry)),
+            signal_stop=Decimal(str(stop_loss)) if stop_loss is not None else None,
+            signal_take_profit=Decimal(str(take_profit)) if take_profit is not None else None,
         )
-        if stop_loss is None:
-            stop_loss = float(synth.stop_loss)
-        if take_profit is None:
-            take_profit = float(synth.take_profit)
+    except ProtectionInvariantError as exc:
+        # Not even a policy pair is constructible (non-positive entry). The
+        # caller must treat this as unprotected, not as "no boundaries wanted".
+        return [], "PROTECTION_FAILED", f"no valid protection plan: {exc}"
 
-    sl, tp, _ = _validate_tp_sl(side, mark_price, stop_loss, take_profit)
+    if plan.source == "POLICY_FALLBACK" and (stop_loss is not None or take_profit is not None):
+        # Audit every discarded signal pair. Without this the substitution is
+        # invisible -- which is precisely how the hybrid geometry survived in
+        # production unnoticed.
+        logger.warning(
+            "PROTECTION_PROVENANCE_FALLBACK intent=%s symbol=%s side=%s entry=%s: "
+            "signal pair (stop=%s, take_profit=%s) is unusable against the actual "
+            "entry and was discarded WHOLE; placing policy pair "
+            "(stop=%s, take_profit=%s, reward_risk=%.3f)",
+            intent_id, symbol, econ_side, plan.entry, stop_loss, take_profit,
+            plan.stop, plan.take_profit, plan.reward_risk,
+        )
+
+    # Prove the exchange's tick rounding cannot push a boundary across entry
+    # before anything reaches the exchange.
+    sl = _round_to_tick(float(plan.stop), tick)
+    tp = _round_to_tick(float(plan.take_profit), tick)
+    try:
+        assert_tick_safe(plan, econ_side, Decimal(str(sl)), Decimal(str(tp)))
+    except ProtectionInvariantError as exc:
+        return [], "PROTECTION_FAILED", str(exc)
 
     protective_orders: list[dict[str, Any]] = []
     base_cid = intent_id[:28]
@@ -189,18 +215,18 @@ def attach_protective_orders(
             intent_id=intent_id,
         )
 
+    # Both legs are always placed: a ProtectionPlan is complete by
+    # construction, so there is no longer a "this side wasn't requested" case.
     error_parts: list[str] = []
-    if sl is not None:
-        try:
-            protective_orders.append(place_protective("STOP_MARKET", sl, "_sl"))
-        except Exception as exc:
-            error_parts.append(f"SL placement returned: {exc}")
+    try:
+        protective_orders.append(place_protective("STOP_MARKET", sl, "_sl"))
+    except Exception as exc:
+        error_parts.append(f"SL placement returned: {exc}")
 
-    if tp is not None:
-        try:
-            protective_orders.append(place_protective("TAKE_PROFIT_MARKET", tp, "_tp"))
-        except Exception as exc:
-            error_parts.append(f"TP placement returned: {exc}")
+    try:
+        protective_orders.append(place_protective("TAKE_PROFIT_MARKET", tp, "_tp"))
+    except Exception as exc:
+        error_parts.append(f"TP placement returned: {exc}")
 
     # Status is decided by what is actually resting on the exchange, never by
     # which placement calls threw -- an error and the exchange's state are not
@@ -245,9 +271,9 @@ def attach_protective_orders(
     ]
 
     missing = []
-    if sl is not None and not has_sl:
+    if not has_sl:
         missing.append("STOP_MARKET")
-    if tp is not None and not has_tp:
+    if not has_tp:
         missing.append("TAKE_PROFIT_MARKET")
 
     if not missing:
@@ -378,13 +404,18 @@ class BinanceTestnetExecutor:
     def _attach_protective_orders(
         self,
         pre_trade_intent: Any,
-        mark_price: float,
+        actual_entry: float,
     ) -> tuple[list[dict[str, Any]], str, str | None]:
         """Attach STOP_MARKET (SL) and TAKE_PROFIT_MARKET (TP) closePosition orders.
 
         Thin wrapper over the standalone `attach_protective_orders` (shared with
         SignalQueueManager.reconcile_pending_entries, which has no
-        pre_trade_intent-shaped object to read from). No behavior change here.
+        pre_trade_intent-shaped object to read from).
+
+        ``actual_entry`` must be the executed fill price. The protection pair
+        is validated against it, not against mark -- validating against mark is
+        what let a target be judged sane while the price actually paid made it
+        unreachable.
         """
         sl = float(pre_trade_intent.stop_loss) if pre_trade_intent.stop_loss is not None else None
         tp = float(pre_trade_intent.take_profit) if pre_trade_intent.take_profit is not None else None
@@ -394,7 +425,7 @@ class BinanceTestnetExecutor:
             side=pre_trade_intent.side,
             stop_loss=sl,
             take_profit=tp,
-            mark_price=mark_price,
+            actual_entry=actual_entry,
             intent_id=pre_trade_intent.intent_id,
         )
 
@@ -518,9 +549,17 @@ class BinanceTestnetExecutor:
             if result_status == "FILLED" and (
                 pre_trade_intent.stop_loss is not None or pre_trade_intent.take_profit is not None
             ):
-                mark_price = float(pre_trade_intent.market_snapshot.mark_price)
+                # The price actually paid, not the pre-trade mark snapshot.
+                # Passing the snapshot validated the protection pair against a
+                # price that predates the order -- the same mistake, one layer
+                # up, as validating against mark in attach_protective_orders.
+                # Fall back to the snapshot only if the exchange reported no
+                # average fill price at all.
+                entry_for_protection = filled_price or float(
+                    pre_trade_intent.market_snapshot.mark_price
+                )
                 protective_orders, protection_status, protection_error = self._attach_protective_orders(
-                    pre_trade_intent, mark_price
+                    pre_trade_intent, entry_for_protection
                 )
                 result.protective_orders = protective_orders
                 result.protection_status = protection_status

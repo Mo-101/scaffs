@@ -40,6 +40,43 @@ from src.trading.symbol_registry import resolve_market
 
 _ARCHIVE_PRODUCERS = {"archive", "archived", "backfill", "historical", "research_archive"}
 _ARCHIVE_CRITERIA_FLAGS = {"archive", "archived", "backfill", "historical"}
+_FORBIDDEN_MOCK_PRODUCERS = {"mock", "fixture", "synthetic", "fake", "test_mock", "mock_provider"}
+
+
+def test_providers_enabled() -> bool:
+    """Mock/synthetic providers are strictly opt-in and forbidden in production."""
+    return (
+        os.getenv("ENABLE_TEST_SIGNAL_PROVIDERS") == "true"
+        and os.getenv("APP_ENV") in {"test", "development"}
+    )
+
+
+def compute_canonical_payload_hash(
+    producer: str,
+    source_signal_id: str,
+    symbol: str,
+    side: str,
+    timeframe: str,
+    criteria_vector: Dict[str, Any],
+) -> str:
+    """Generate deterministic SHA256 payload hash of invariant signal attributes."""
+    stable_criteria = {
+        k: v for k, v in criteria_vector.items()
+        if k not in (
+            "ingested_at", "received_at", "queue_id", "route_confidence",
+            "payload_hash", "canonical_id", "canonical_strategy_id", "strategy_profile"
+        )
+    }
+    canonical_dict = {
+        "producer": str(producer).strip().lower(),
+        "source_signal_id": str(source_signal_id).strip(),
+        "symbol": str(symbol).strip().upper(),
+        "side": str(side).strip().upper(),
+        "timeframe": str(timeframe).strip(),
+        "criteria": stable_criteria,
+    }
+    dumped = json.dumps(canonical_dict, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(dumped.encode("utf-8")).hexdigest()
 
 # Only these producer identities may enqueue signals. An unrecognized producer
 # is rejected outright rather than silently trusted -- this is a proportionate,
@@ -49,6 +86,8 @@ _KNOWN_PRODUCERS = {
     "scaffs_picker",
     "scaffs_native",
     "idim_ikang",
+    "sigmalui",
+    "sigmalui_soul",
     "scaffs_manual",
     "grid_v3",
     "grid_futures_5x",
@@ -79,11 +118,35 @@ _ACTIVE_STATUSES = {"PENDING", "CLAIMED"}
 _RESTING_ENTRY_STATUSES = {"DISPATCHED", "PARTIALLY_FILLED", "PROTECTION_FAILED"}
 # Terminal statuses where an order was actually placed/filled -- a signal
 # that reached one of these must NOT be treated as retry-eligible.
-_EXECUTED_TERMINAL_STATUSES = {"DISPATCHED", "PARTIALLY_FILLED", "PROTECTED", "PROTECTION_FAILED"}
+_EXECUTED_TERMINAL_STATUSES = {
+    "DISPATCHED", "PARTIALLY_FILLED", "PROTECTED", "PROTECTION_FAILED",
+    # An order was placed and filled here too -- protection was retired, not
+    # the fill -- so this must never be treated as retry-eligible either.
+    "PROTECTION_ABANDONED_NO_POSITION",
+}
 # Default cancel-on-TTL window for a resting, unfilled LIMIT entry, when the
 # caller doesn't specify one. Distinct from ttl_seconds, which only gates
 # PENDING/CLAIMED claim-eligibility before an order is ever placed.
 _DEFAULT_ENTRY_TTL_SECONDS = 900
+
+# A signal's planned entry is only actionable while price is still near it.
+# Upstream feeds re-emit the same setup under a stable source_signal_id
+# indefinitely, so once the market has run away from the planned entry the
+# resulting LIMIT can never fill: it rests until entry TTL, gets cancelled,
+# and -- because ENTRY_CANCELLED_TTL is re-enqueue-eligible upstream -- comes
+# straight back on the next poll. That loop burns exchange rate limit and
+# produces no trades (observed: one signal re-enqueued 39x in 24h, 124 of 168
+# signals in a 9h window ending in ENTRY_CANCELLED_TTL). Reject the stale
+# entry instead, under a status that is NOT re-enqueue-eligible so the same
+# dead setup does not immediately return.
+_MAX_ENTRY_DEVIATION_PCT = float(os.getenv("MAX_ENTRY_DEVIATION_PCT", "0.005"))
+
+# How long a filled entry may keep failing protection before a confirmed
+# absence of the position on the exchange is treated as permanent rather than
+# transient. Below this, protection failures stay retryable no matter what the
+# position read says -- a rate limit or a momentary -4509 while a fill settles
+# must never strand a real position as un-retried.
+_PROTECTION_RETRY_GRACE_SECONDS = float(os.getenv("PROTECTION_RETRY_GRACE_SECONDS", "600"))
 
 # Hard ceiling on risk_pct-based sizing: no single dispatch may risk more than
 # this fraction of available equity, regardless of what a signal/caller
@@ -228,6 +291,14 @@ def validate_signal_source_role(
     criteria: Dict[str, Any],
 ) -> Optional[str]:
     clean_producer = str(producer or "").strip().lower()
+
+    # 1. Strict Mock Prohibition: test sources are opt-in, not production opt-out
+    if clean_producer in _FORBIDDEN_MOCK_PRODUCERS or any(
+        m in clean_producer for m in ("mock", "fixture", "synthetic", "fake")
+    ):
+        if not test_providers_enabled():
+            return f"Mock/synthetic signal producer '{producer}' is strictly forbidden in production/live environments"
+
     if clean_producer in _ARCHIVE_PRODUCERS:
         return f"producer '{producer}' is archive/backfill data and cannot enter the live execution queue"
 
@@ -442,6 +513,8 @@ class SignalQueueManager:
         criteria_vector: Optional[Dict[str, Any]] = None,
         ttl_seconds: int = 300,
         signal_timestamp: Optional[str] = None,
+        initial_status: str = "PENDING",
+        rejection_reason: Optional[str] = None,
         conn: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """Validate, route, and persist a new candidate signal into the queue."""
@@ -494,23 +567,76 @@ class SignalQueueManager:
         now_dt = datetime.now(timezone.utc)
         absolute_quality_score = compute_absolute_quality_score(raw_score, crit, signal_generated_dt, now_dt)
 
+        payload_hash = None
+        if source_signal_id:
+            payload_hash = compute_canonical_payload_hash(
+                producer=producer,
+                source_signal_id=source_signal_id,
+                symbol=clean_sym,
+                side=clean_side,
+                timeframe=timeframe,
+                criteria_vector=crit,
+            )
+            crit["payload_hash"] = payload_hash
+
         # 3. Insert into PostgreSQL (reuse external connection when given)
         con = conn or psycopg.connect(self.dsn)
         should_close = conn is None
         try:
             try:
                 with con.cursor() as cur:
+                    if source_signal_id:
+                        cur.execute(
+                            """
+                            SELECT id, criteria_vector->>'payload_hash', status
+                            FROM paper_trading.signal_queue
+                            WHERE producer = %s AND source_signal_id = %s;
+                            """,
+                            (producer, source_signal_id),
+                        )
+                        existing = cur.fetchone()
+                        if existing:
+                            existing_id, existing_hash, existing_status = existing
+                            if existing_hash and existing_hash == payload_hash:
+                                logger.info(
+                                    "Duplicate signal ignored: producer=%s, source_signal_id=%s, existing_id=%s",
+                                    producer, source_signal_id, existing_id,
+                                )
+                                return {
+                                    "ok": True,
+                                    "id": str(existing_id),
+                                    "duplicate": True,
+                                    "status": "DUPLICATE_IGNORED",
+                                    "message": f"Signal {source_signal_id} already exists with identical payload",
+                                }
+                            else:
+                                collision_reason = (
+                                    f"SOURCE ID COLLISION for producer '{producer}' and source_signal_id '{source_signal_id}': "
+                                    f"incoming payload hash {payload_hash[:12] if payload_hash else 'none'} != "
+                                    f"existing {str(existing_hash)[:12]}. Refusing mutation."
+                                )
+                                logger.error(collision_reason)
+                                return {
+                                    "ok": False,
+                                    "id": str(existing_id),
+                                    "status": "REJECTED_SOURCE_ID_COLLISION",
+                                    "reason": collision_reason,
+                                }
+
                     cur.execute(
                         """
                         INSERT INTO paper_trading.signal_queue (
                             id, source_signal_id, producer, symbol, side, timeframe,
-                            raw_score, criteria_vector, target_strategy, status, ttl_seconds,
+                            raw_score, criteria_vector, target_strategy, status, rejection_reason, ttl_seconds,
                             signal_generated_at, absolute_quality_score
                         ) VALUES (
                             %s, %s, %s, %s, %s, %s,
-                            %s, %s::jsonb, %s, 'PENDING', %s,
+                            %s, %s::jsonb, %s, %s, %s, %s,
                             %s, %s
-                        ) RETURNING id, created_at;
+                        )
+                        ON CONFLICT (producer, source_signal_id) WHERE source_signal_id IS NOT NULL
+                        DO NOTHING
+                        RETURNING id, created_at;
                         """,
                         (
                             queue_id,
@@ -522,18 +648,34 @@ class SignalQueueManager:
                             raw_score,
                             json.dumps(crit),
                             target_strategy,
+                            initial_status,
+                            rejection_reason,
                             ttl_seconds,
                             signal_generated_dt,
                             absolute_quality_score,
                         ),
                     )
                     res = cur.fetchone()
+                    if res is None and source_signal_id:
+                        cur.execute(
+                            "SELECT id FROM paper_trading.signal_queue WHERE producer = %s AND source_signal_id = %s;",
+                            (producer, source_signal_id),
+                        )
+                        winner = cur.fetchone()
+                        con.commit()
+                        return {
+                            "ok": True,
+                            "id": str(winner[0]) if winner else queue_id,
+                            "duplicate": True,
+                            "status": "DUPLICATE_IGNORED",
+                        }
                 con.commit()
 
                 # Phase 1 Hybrid Portfolio Allocator Proposal Hook
                 try:
                     from src.trading.hybrid import (
                         from_idim,
+                        from_sigmalui,
                         from_picker,
                         from_grid,
                         from_morning_glory,
@@ -552,6 +694,8 @@ class SignalQueueManager:
 
                     if "idim" in prod:
                         prop = from_idim(payload)
+                    elif "sigmalui" in prod or "soul" in prod:
+                        prop = from_sigmalui(payload)
                     elif "grid" in prod:
                         prop = from_grid(payload)
                     elif "morning" in prod or "glory" in prod or "funding" in prod:
@@ -1029,6 +1173,31 @@ class SignalQueueManager:
             _write_terminal("LEVERAGE_MISMATCH_BLOCKED", reason)
             return {"ok": False, "status": "LEVERAGE_MISMATCH_BLOCKED", "queue_id": queue_id, "reason": reason}
 
+        # 5b. Reject a planned entry the market has already left behind. This
+        # runs before pricing/sizing because a stale entry is not a sizing
+        # problem -- there is no quantity at which an unreachable LIMIT is
+        # worth resting on the book. Only the caller-supplied entry is checked:
+        # when there is no entry hint, _resolve_limit_price prices 0.2% off
+        # mark, which is reachable by construction.
+        entry_hint = criteria.get("entry")
+        if entry_hint is not None and ticker_px > 0:
+            try:
+                entry_val = float(entry_hint)
+            except (TypeError, ValueError):
+                entry_val = None
+            if entry_val is not None and entry_val > 0:
+                deviation = abs(entry_val - ticker_px) / ticker_px
+                if deviation > _MAX_ENTRY_DEVIATION_PCT:
+                    reason = (
+                        f"ENTRY_TOO_FAR_FROM_MARK for {clean_sym}: planned entry {entry_val:.8f} is "
+                        f"{deviation * 100:.2f}% from mark {ticker_px:.8f} (limit "
+                        f"{_MAX_ENTRY_DEVIATION_PCT * 100:.2f}%); a LIMIT there cannot realistically "
+                        f"fill, so the signal is stale rather than actionable."
+                    )
+                    logger.warning(reason)
+                    _write_terminal("ENTRY_TOO_FAR_FROM_MARK", reason)
+                    return {"ok": False, "status": "ENTRY_TOO_FAR_FROM_MARK", "queue_id": queue_id, "reason": reason}
+
         # 6. Every entry is a LIMIT order now -- never MARKET. Resolve the
         # entry price before sizing: risk-based sizing needs it to compute
         # stop distance.
@@ -1341,22 +1510,72 @@ class SignalQueueManager:
                 self._record_live_fills(queue_id, clean_sym, trade_side, order_id, outcome.get("trades") or [])
                 sl = criteria.get("stop_loss")
                 tp = criteria.get("take_profit")
-                mark = outcome.get("avg_price") or client.get_ticker_price(clean_sym)
+                # The executed average fill, not mark: the protection pair is
+                # validated against the price actually paid. Ticker is only a
+                # last resort when the exchange did not report an average --
+                # it is a worse proxy, but refusing to protect a filled
+                # position because one field was absent is worse still.
+                fill_price = outcome.get("avg_price") or client.get_ticker_price(clean_sym)
                 protective_orders, protection_status, protection_error = attach_protective_orders(
                     client=client,
                     symbol=clean_sym,
                     side=trade_side,
                     stop_loss=float(sl) if sl is not None else None,
                     take_profit=float(tp) if tp is not None else None,
-                    mark_price=float(mark),
+                    actual_entry=float(fill_price),
                     intent_id=queue_id_str,
                 )
                 criteria["execution"] = outcome
                 criteria["protective_orders"] = protective_orders
                 new_status = "PROTECTED" if protection_status in ("PROTECTED", "NO_BOUNDARIES") else "PROTECTION_FAILED"
+                terminal = new_status == "PROTECTED"
+
+                # Protection can only ever succeed while exposure actually
+                # exists on the exchange. If the position is gone (closed,
+                # liquidated, or never opened despite a recorded partial fill)
+                # every retry is guaranteed to fail -- Binance answers -4509
+                # "TIF GTE can only be used with open positions" forever --
+                # and PROTECTION_FAILED is in _RESTING_ENTRY_STATUSES, so the
+                # row is re-polled every reconciler tick indefinitely
+                # (observed: one row retried every ~12s for 8.5+ hours).
+                #
+                # Retiring on a bare "no position visible" would be wrong: a
+                # protection failure is usually transient (rate limit, a brief
+                # -4509 while the fill settles), and giving up on the first
+                # one could strand a real, genuinely unprotected position. So
+                # require BOTH positive evidence the position is gone AND that
+                # we are well past the window where a transient failure would
+                # have cleared. Under that grace period the row stays
+                # retryable, which is the behaviour that matters most.
+                if not terminal and dispatched_at is not None:
+                    stuck_seconds = (datetime.now(timezone.utc) - dispatched_at).total_seconds()
+                    if stuck_seconds > _PROTECTION_RETRY_GRACE_SECONDS:
+                        try:
+                            net_amt = sum(
+                                float(p.get("positionAmt", 0) or 0)
+                                for p in (client.get_positions(clean_sym) or [])
+                            )
+                        except Exception as exc:
+                            # Could not confirm -- keep retrying rather than
+                            # retire a position that may be open and naked.
+                            logger.warning(
+                                "[%s] could not verify %s position while considering retiring "
+                                "failed protection: %s", queue_id_str, clean_sym, exc,
+                            )
+                        else:
+                            if net_amt == 0:
+                                new_status = "PROTECTION_ABANDONED_NO_POSITION"
+                                terminal = True
+                                protection_error = (
+                                    f"{protection_error or 'protection failed'}; retired after "
+                                    f"{stuck_seconds:.0f}s: no open {clean_sym} position on exchange "
+                                    f"to protect"
+                                )
+                                logger.warning("[%s] %s", queue_id_str, protection_error)
+
                 self._write_reconcile_outcome(
                     queue_id_str, new_status, filled_qty, criteria,
-                    reason=protection_error, terminal=(new_status == "PROTECTED"),
+                    reason=protection_error, terminal=terminal,
                 )
                 processed.append({"queue_id": queue_id_str, "outcome": new_status})
                 continue

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { api } from "../lib/api";
 import { toast } from "sonner";
 import {
@@ -34,7 +34,6 @@ interface QueuedSignal {
 }
 
 const AUTO_NOTIONAL_KEY = "idim_auto_notional_usd";
-const AUTO_EXECUTE_KEY = "idim_auto_execute_enabled";
 const AUTO_THRESHOLD_KEY = "idim_auto_execute_threshold";
 const POLL_INTERVAL_MS = 5_000;
 
@@ -88,8 +87,6 @@ export const SignalPriorityQueuePanel: React.FC = () => {
   });
   const [showSettings, setShowSettings] = useState<boolean>(false);
 
-  const autoDispatchingRef = useRef<Set<string>>(new Set());
-  const previousIdsRef = useRef<Set<string>>(new Set());
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -247,17 +244,32 @@ export const SignalPriorityQueuePanel: React.FC = () => {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={toggleAutoExecute}
+            onClick={() => void toggleAutoExecute()}
+            disabled={autoBusy || !autoLoaded}
             className={cn(
-              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium border transition-all",
-              autoExecute
-                ? "bg-emerald-600/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-600/30"
-                : "bg-slate-800/50 text-slate-300 border-slate-700 hover:bg-slate-800"
+              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium border transition-all disabled:opacity-60 disabled:cursor-not-allowed",
+              !autoLoaded
+                ? "bg-slate-800/50 text-slate-400 border-slate-700"
+                : autoExecute
+                  ? "bg-emerald-600/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-600/30"
+                  : "bg-slate-800/50 text-slate-300 border-slate-700 hover:bg-slate-800"
             )}
-            title={autoExecute ? "Auto-execute is enabled" : "Auto-execute is disabled"}
+            title={
+              !autoLoaded
+                ? "Reading auto-execute state from the server..."
+                : autoExecute
+                  ? "AUTO: the worker and Idim daemon dispatch signals themselves. Click for MANUAL."
+                  : "MANUAL: signals queue until you press Execute. Click for AUTO."
+            }
           >
-            {autoExecute ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
-            {autoExecute ? "Auto ON" : "Auto OFF"}
+            {!autoLoaded ? (
+              <RefreshCw className="h-3 w-3 animate-spin" />
+            ) : autoExecute ? (
+              <Play className="h-3 w-3" />
+            ) : (
+              <Pause className="h-3 w-3" />
+            )}
+            {!autoLoaded ? "Auto …" : autoBusy ? "Switching…" : autoExecute ? "Auto ON" : "Manual"}
           </button>
 
           <button

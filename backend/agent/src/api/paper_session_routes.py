@@ -1813,6 +1813,48 @@ def register_paper_session_routes(
             ),
         }
 
+    @app.get("/paper-sessions/signal-queue/auto-execute", dependencies=auth_dependencies)
+    async def get_auto_execute():
+        """Current auto-execute state -- the single authority for auto vs manual.
+
+        The dashboard used to hold this in browser localStorage, so the server
+        had no idea whether auto-execution was on and no server-side flag could
+        turn it off. This endpoint (and the setting behind it) is now the one
+        place that decides, shared by the API, the worker and the PM2 daemon.
+        """
+        from src.trading.runtime_settings import auto_dispatch_enabled, get_setting, AUTO_DISPATCH_KEY
+
+        stored = get_setting(AUTO_DISPATCH_KEY, None)
+        return {
+            "ok": True,
+            "enabled": auto_dispatch_enabled("SIGMALUI_AUTO_DISPATCH"),
+            "source": "database" if stored is not None else "env_default",
+        }
+
+    @app.post("/paper-sessions/signal-queue/auto-execute", dependencies=auth_dependencies)
+    async def set_auto_execute(payload: dict[str, Any] = Body(...)):
+        """Turn auto-execute on or off. Takes effect on the next poll cycle, no restart."""
+        from src.trading.runtime_settings import set_auto_dispatch
+
+        if "enabled" not in payload:
+            raise HTTPException(status_code=400, detail="Missing required 'enabled' field.")
+        raw = payload["enabled"]
+        if isinstance(raw, str):
+            enabled = raw.strip().lower() in ("1", "true", "yes", "on")
+        elif isinstance(raw, bool):
+            enabled = raw
+        else:
+            raise HTTPException(status_code=400, detail="'enabled' must be a boolean.")
+
+        try:
+            set_auto_dispatch(enabled, updated_by="dashboard")
+        except Exception as exc:
+            # Fail loudly: silently failing to disable execution is the dangerous direction.
+            raise HTTPException(status_code=502, detail=f"Could not persist auto-execute setting: {exc}") from exc
+
+        logger.warning("Auto-execute set to %s via dashboard", enabled)
+        return {"ok": True, "enabled": enabled}
+
     @app.post("/paper-sessions/signal-queue/dispatch", dependencies=auth_dependencies)
     async def dispatch_queued_signal_endpoint(payload: dict[str, Any] = Body(...)):
         """Dispatch one queued signal through collision checks to the matching engine."""
@@ -1991,6 +2033,37 @@ def register_paper_session_routes(
             bridge.sync_and_enqueue_signals,
             auto_dispatch=auto_dispatch,
             notional_usd=notional_usd,
+        )
+        res["auto_dispatch_applied"] = auto_dispatch
+        return res
+
+    @app.post("/paper-sessions/signal-queue/sync-sigmalui", dependencies=auth_dependencies)
+    async def sync_sigmalui_signals_endpoint(payload: dict[str, Any] = Body(default={})):
+        """Run one authenticated SigmaLUI premium ingestion cycle on demand."""
+        from src.trading.sigmalui_feed_bridge import SigmaluiFeedBridge
+
+        try:
+            notional_usd = float(
+                payload.get("notional_usd", os.getenv("SIGMALUI_AUTO_DISPATCH_NOTIONAL", "100"))
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid notional_usd: {exc}") from exc
+
+        effective_limit = _effective_notional_cap()
+        if notional_usd <= 0 or notional_usd > effective_limit:
+            raise HTTPException(
+                status_code=400,
+                detail=f"notional_usd must be in (0, {effective_limit:.2f}].",
+            )
+
+        auto_dispatch = os.getenv("SIGMALUI_AUTO_DISPATCH", "false").lower() in ("1", "true", "yes")
+        min_score = float(os.getenv("SIGMALUI_MIN_SCORE", "60"))
+        bridge = SigmaluiFeedBridge()
+        res = await run_in_threadpool(
+            bridge.sync_and_enqueue_signals,
+            auto_dispatch=auto_dispatch,
+            notional_usd=notional_usd,
+            min_score=min_score,
         )
         res["auto_dispatch_applied"] = auto_dispatch
         return res

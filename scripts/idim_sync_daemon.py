@@ -41,15 +41,30 @@ signal.signal(signal.SIGTERM, handle_signal)
 def main():
     poll_interval = int(os.getenv("IDIM_POLL_INTERVAL_SECONDS", "30"))
     notional_usd = float(os.getenv("IDIM_AUTO_DISPATCH_NOTIONAL", "25.0"))
+    # Auto-dispatch is opt-IN. It was hardcoded True, so the daemon fired every
+    # signal it ingested regardless of configuration -- there was no way to run
+    # ingest-only and pick entries by hand. Default False so an unset env means
+    # "queue it, a human decides", which is the safe direction; SigmaLui's bridge
+    # already defaults auto_dispatch=False for the same reason.
+    from src.trading.runtime_settings import auto_dispatch_enabled
+    auto_dispatch = auto_dispatch_enabled("IDIM_AUTO_DISPATCH")
     
-    logger.info("Starting Idim Ikang Ingestion Daemon (interval=%ds, notional=$%.2f)...", poll_interval, notional_usd)
+    logger.info(
+        "Starting Idim Ikang Ingestion Daemon (interval=%ds, notional=$%.2f, auto_dispatch=%s)...",
+        poll_interval, notional_usd, auto_dispatch,
+    )
     bridge = IdimFeedBridge()
     
     cycle = 0
     while running:
         cycle += 1
         try:
-            res = bridge.sync_and_enqueue_signals(auto_dispatch=True, notional_usd=notional_usd)
+            # Re-read per cycle so the dashboard toggle reaches this daemon too.
+            cycle_auto = auto_dispatch_enabled("IDIM_AUTO_DISPATCH")
+            if cycle_auto != auto_dispatch:
+                logger.info("Idim auto_dispatch changed %s -> %s", auto_dispatch, cycle_auto)
+                auto_dispatch = cycle_auto
+            res = bridge.sync_and_enqueue_signals(auto_dispatch=cycle_auto, notional_usd=notional_usd)
             examined = res.get("signals_examined", 0)
             enqueued = res.get("enqueued_count", 0)
             dispatched = res.get("dispatched_count", 0)

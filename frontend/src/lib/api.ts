@@ -130,7 +130,11 @@ export const api = {
   getSignalQueueHistory: async (limit?: number): Promise<any> =>
     get(`/paper-sessions/signal-queue/history${limit ? `?limit=${limit}` : ""}`),
   dispatchQueuedSignal: async (payload: any): Promise<any> => post("/paper-sessions/signal-queue/dispatch", payload),
+  getAutoExecute: async (): Promise<any> => get("/paper-sessions/signal-queue/auto-execute"),
+  setAutoExecute: async (enabled: boolean): Promise<any> =>
+    post("/paper-sessions/signal-queue/auto-execute", { enabled }),
   syncIdimSignals: async (payload?: any): Promise<any> => post("/paper-sessions/signal-queue/sync-idim", payload),
+  syncSigmaluiSignals: async (payload?: any): Promise<any> => post("/paper-sessions/signal-queue/sync-sigmalui", payload),
   runPositionReconciler: async (dryRun?: boolean): Promise<any> =>
     post(`/paper-sessions/position-reconciler/run?dry_run=${dryRun ?? true}`),
   getChannelStatus: async (): Promise<any> => get("/channels/status"),

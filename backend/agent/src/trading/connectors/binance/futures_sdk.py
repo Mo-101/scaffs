@@ -732,7 +732,12 @@ class BinanceFuturesClient:
                             "outcome_class": BinanceOutcomeClass.SUCCESS.value,
                             "note": "Order was filled before cancel reached matching engine.",
                         }
-                    if st in ("CANCELED", "EXPIRED"):
+                    # EXPIRED_IN_MATCH is a real terminal Binance status (the order
+                    # expired during matching, e.g. selfTradePreventionMode=EXPIRE_MAKER).
+                    # Omitting it meant cancel_order fell through to `raise` for an order
+                    # that was already dead, and the TTL loop retried it every ~10s
+                    # forever -- 1,834 retries over 23h on INJUSDT order 300193262.
+                    if st in ("CANCELED", "EXPIRED", "EXPIRED_IN_MATCH"):
                         return {
                             "ok": True,
                             "canceled": True,

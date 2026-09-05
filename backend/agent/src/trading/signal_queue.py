@@ -1580,7 +1580,7 @@ class SignalQueueManager:
                 processed.append({"queue_id": queue_id_str, "outcome": new_status})
                 continue
 
-            if exch_status in ("CANCELED", "EXPIRED", "REJECTED"):
+            if exch_status in ("CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"):
                 self._write_reconcile_outcome(
                     queue_id_str, "ENTRY_CANCELLED_TTL", filled_qty, criteria,
                     reason=f"order {exch_status.lower()} on exchange", terminal=True,

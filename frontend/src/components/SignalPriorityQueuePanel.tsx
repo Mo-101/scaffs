@@ -38,18 +38,38 @@ const AUTO_EXECUTE_KEY = "idim_auto_execute_enabled";
 const AUTO_THRESHOLD_KEY = "idim_auto_execute_threshold";
 const POLL_INTERVAL_MS = 5_000;
 
+const producerLabel = (producer?: string) => {
+  switch ((producer || "").toLowerCase()) {
+    case "sigmalui":
+    case "sigmalui_soul":
+      return "SigmaLUI Premium";
+    case "idim_ikang":
+      return "IDIM Ikang";
+    case "scaffs_native":
+      return "Scaffs Native";
+    case "scaffs_picker":
+      return "Scaffs Picker";
+    default:
+      return producer || "Unknown source";
+  }
+};
+
 export const SignalPriorityQueuePanel: React.FC = () => {
   const [pendingSignals, setPendingSignals] = useState<QueuedSignal[]>([]);
+  // Recent premium activity. Rendered as trailing rows of the single signal table
+  // below -- it deliberately has no section container of its own.
+  const [recentSignals, setRecentSignals] = useState<QueuedSignal[]>([]);
   const [syncing, setSyncing] = useState<boolean>(false);
   const [dispatchingId, setDispatchingId] = useState<string | null>(null);
 
-  const [autoExecute, setAutoExecute] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(AUTO_EXECUTE_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
+  // Auto-execute is SERVER state, not browser state. It used to live in
+  // localStorage, which meant the dashboard dispatched orders on its own and no
+  // server-side flag could stop it -- a "paused" backend plus an open tab was
+  // still a live trading system. The server is now the single authority; this is
+  // just a mirror of it.
+  const [autoExecute, setAutoExecute] = useState<boolean>(false);
+  const [autoLoaded, setAutoLoaded] = useState<boolean>(false);
+  const [autoBusy, setAutoBusy] = useState<boolean>(false);
   const [notionalUsd, setNotionalUsd] = useState<number>(() => {
     try {
       const saved = Number(localStorage.getItem(AUTO_NOTIONAL_KEY));
@@ -71,81 +91,68 @@ export const SignalPriorityQueuePanel: React.FC = () => {
   const autoDispatchingRef = useRef<Set<string>>(new Set());
   const previousIdsRef = useRef<Set<string>>(new Set());
 
-  const fetchPending = useCallback(async () => {
+  const fetchQueue = useCallback(async () => {
     try {
-      const res = await api.getSignalQueuePending(30);
-      if (res?.ok) setPendingSignals(res.signals || []);
+      const [pending, history] = await Promise.all([
+        api.getSignalQueuePending(30),
+        api.getSignalQueueHistory(30),
+      ]);
+      if (pending?.ok) setPendingSignals(pending.signals || []);
+      if (history?.ok) {
+        setRecentSignals(
+          (history.history || []).filter((signal: QueuedSignal) =>
+            signal.producer?.toLowerCase().startsWith("sigmalui")
+          ).slice(0, 8)
+        );
+      }
     } catch (err) {
       console.error("Failed to load pending queue:", err);
     }
   }, []);
 
   useEffect(() => {
-    void fetchPending();
-    const interval = setInterval(() => void fetchPending(), POLL_INTERVAL_MS);
+    void fetchQueue();
+    const interval = setInterval(() => void fetchQueue(), POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [fetchPending]);
+  }, [fetchQueue]);
 
-  // Auto-dispatch any newly-seen pending signal whose raw score passes the threshold.
+  // Mirror the server's auto-execute flag. Polled so a change made elsewhere
+  // (another operator, another tab, the API) shows up here rather than this tab
+  // believing a stale value.
   useEffect(() => {
-    if (!autoExecute || pendingSignals.length === 0) return;
-
-    const currentIds = new Set(pendingSignals.map((s) => s.id));
-    const candidates = pendingSignals.filter(
-      (s) =>
-        !previousIdsRef.current.has(s.id) &&
-        !autoDispatchingRef.current.has(s.id) &&
-        (s.raw_score ?? 0) >= threshold
-    );
-
-    if (candidates.length === 0) {
-      previousIdsRef.current = currentIds;
-      return;
-    }
-
-    (async () => {
-      for (const sig of candidates) {
-        autoDispatchingRef.current.add(sig.id);
-        try {
-          const res = await api.dispatchQueuedSignal({
-            queue_id: sig.id,
-            notional_usd: notionalUsd,
-          });
-          if (res?.ok) {
-            toast.success(`Auto-executed ${sig.symbol} ${sig.side}`, {
-              description: `Binance Testnet Order ID: ${res.order_id}`,
-            });
-          } else {
-            toast.error(`Auto-execute blocked: ${sig.symbol}`, {
-              description: res?.reason || res?.error || "risk or collision gate rejected the signal",
-            });
-          }
-        } catch (err: any) {
-          toast.error(`Auto-execute failed: ${sig.symbol}`, {
-            description: err?.message || String(err),
-          });
-        } finally {
-          autoDispatchingRef.current.delete(sig.id);
+    const read = async () => {
+      try {
+        const res = await api.getAutoExecute();
+        if (res?.ok) {
+          setAutoExecute(Boolean(res.enabled));
+          setAutoLoaded(true);
         }
+      } catch {
+        /* leave the last known value; the toggle reports its own failures */
       }
-      await fetchPending();
-    })();
+    };
+    void read();
+    const id = setInterval(() => void read(), POLL_INTERVAL_MS * 2);
+    return () => clearInterval(id);
+  }, []);
 
-    previousIdsRef.current = currentIds;
-  }, [autoExecute, notionalUsd, threshold, pendingSignals, fetchPending]);
+  // NOTE: the browser no longer auto-dispatches. The worker and the Idim daemon
+  // read the same server-side flag every poll cycle and execute there, so
+  // auto-execute behaves identically whether or not this page is open.
 
-  const handleSyncIdim = async () => {
+  const handleSyncAll = async () => {
     setSyncing(true);
     try {
-      const res = await api.syncIdimSignals({ notional_usd: notionalUsd });
-      if (res?.ok) {
-        toast.success("Idim Ikang Feed Synced", {
-          description: `Ingested ${res.enqueued_count} new retained-strategy signals into priority queue.`,
-        });
-        await fetchPending();
-      }
+      const [sigma, idim] = await Promise.all([
+        api.syncSigmaluiSignals({ notional_usd: notionalUsd }),
+        api.syncIdimSignals({ notional_usd: notionalUsd }),
+      ]);
+      toast.success("Signal sources refreshed", {
+        description: `SigmaLUI: ${sigma?.signals_examined ?? 0} examined, ${sigma?.enqueued_count ?? 0} new. IDIM: ${idim?.enqueued_count ?? 0} new.`,
+      });
+      await fetchQueue();
     } catch (err: any) {
-      toast.error("Idim Sync Error", { description: err?.message || String(err) });
+      toast.error("Signal refresh failed", { description: err?.message || String(err) });
     } finally {
       setSyncing(false);
     }
@@ -156,29 +163,46 @@ export const SignalPriorityQueuePanel: React.FC = () => {
     try {
       const res = await api.dispatchQueuedSignal({ queue_id: signal.id, notional_usd: notionalUsd });
       if (res?.ok) {
-        toast.success(`Dispatched ${signal.symbol} ${signal.side}`, {
-          description: `Binance Testnet Order ID: ${res.order_id} (${res.client_order_id})`,
+        toast.success(`Dispatched ${producerLabel(signal.producer)} signal`, {
+          description: `${signal.symbol} ${signal.side} · Binance Testnet Order ID: ${res.order_id} (${res.client_order_id})`,
         });
-        await fetchPending();
+        await fetchQueue();
       } else {
-        toast.error("Execution Blocked", { description: res?.reason || res?.error });
+        toast.error(`Execution blocked: ${producerLabel(signal.producer)}`, {
+          description: `${signal.symbol} ${signal.side} · ${res?.reason || res?.error}`,
+        });
       }
     } catch (err: any) {
-      toast.error("Dispatch Failed", { description: err?.message || String(err) });
+      toast.error(`Dispatch failed: ${producerLabel(signal.producer)}`, {
+        description: `${signal.symbol} ${signal.side} · ${err?.message || String(err)}`,
+      });
     } finally {
       setDispatchingId(null);
     }
   };
 
-  const toggleAutoExecute = () => {
+  const toggleAutoExecute = async () => {
     const next = !autoExecute;
-    setAutoExecute(next);
+    setAutoBusy(true);
     try {
-      localStorage.setItem(AUTO_EXECUTE_KEY, String(next));
-    } catch {}
-    toast.info(next ? "Auto-execute ON" : "Auto-execute OFF", {
-      description: next ? `Signals with raw score ≥ ${threshold} will dispatch at $${notionalUsd} notional.` : "Queue will refresh but remain manual.",
-    });
+      const res = await api.setAutoExecute(next);
+      if (res?.ok) {
+        setAutoExecute(Boolean(res.enabled));
+        toast.success(res.enabled ? "Auto-execute ON" : "Auto-execute OFF", {
+          description: res.enabled
+            ? "The worker and Idim daemon will dispatch on their next cycle."
+            : "Signals will queue for manual dispatch. No restart needed.",
+        });
+      } else {
+        toast.error("Could not change auto-execute", { description: res?.detail || "server rejected the change" });
+      }
+    } catch (err: any) {
+      // Do not flip the UI on failure -- showing OFF while the server is still
+      // ON is exactly the confusion this change exists to remove.
+      toast.error("Could not change auto-execute", { description: err?.message || String(err) });
+    } finally {
+      setAutoBusy(false);
+    }
   };
 
   const canonicalId = (s: QueuedSignal) =>
@@ -198,14 +222,14 @@ export const SignalPriorityQueuePanel: React.FC = () => {
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-sm font-bold text-white leading-none">
-              Idim Ikang Signal Queue &amp; Strategy Router
+              Multi-Source Signal Queue &amp; Strategy Router
             </h2>
             <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-500/20 leading-none">
-              LIVE FEED ACTIVE
+              PREMIUM FEED ACTIVE
             </span>
           </div>
           <p className="text-[10px] text-slate-400 mt-0.5 hidden sm:block">
-            Multi-criteria TOPSIS ranking · quality gating · collision-guarded execution · Binance USDⓈ-M
+            SigmaLUI Premium, IDIM Ikang and Scaffs native signals · collision-guarded execution · Binance USDⓈ-M
           </p>
         </div>
         {/* Strategy pills */}
@@ -245,12 +269,12 @@ export const SignalPriorityQueuePanel: React.FC = () => {
           </button>
 
           <button
-            onClick={handleSyncIdim}
+            onClick={handleSyncAll}
             disabled={syncing}
             className="flex items-center gap-1.5 rounded-lg bg-amber-600/20 px-3 py-1.5 text-xs font-medium text-amber-300 border border-amber-500/30 hover:bg-amber-600/30 transition-all disabled:opacity-50 flex-shrink-0"
           >
             <RefreshCw className={`h-3 w-3 ${syncing ? "animate-spin" : ""}`} />
-            {syncing ? "Syncing..." : "Sync Idim Stream"}
+            {syncing ? "Refreshing..." : "Refresh All Sources"}
           </button>
         </div>
       </div>
@@ -296,10 +320,9 @@ export const SignalPriorityQueuePanel: React.FC = () => {
       )}
 
       {/* Active Priority Queue — scrollable, max 5 rows visible */}
-      {pendingSignals.length === 0 ? (
+      {pendingSignals.length === 0 && recentSignals.length === 0 ? (
         <div className="py-5 text-center text-xs text-slate-500">
-          No pending signals. Click{" "}
-          <span className="text-amber-400 font-semibold">"Sync Idim Stream"</span> to ingest fresh signals.
+          No signals are waiting for manual dispatch and no recent activity has been recorded.
         </div>
       ) : (
         <div className="overflow-auto" style={{ maxHeight: "220px" }}>
@@ -307,11 +330,11 @@ export const SignalPriorityQueuePanel: React.FC = () => {
             <thead className="sticky top-0 bg-slate-950 text-slate-400 uppercase text-[10px] tracking-wider z-10">
               <tr>
                 <th className="p-2">Rank / TOPSIS</th>
-                <th className="p-2">Symbol</th>
+                <th className="p-2">Source / Symbol</th>
                 <th className="p-2">Side</th>
                 <th className="p-2">Strategy</th>
                 <th className="p-2">Score</th>
-                <th className="p-2 text-right">Execute</th>
+                <th className="p-2 text-right">Execute / Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
@@ -338,7 +361,16 @@ export const SignalPriorityQueuePanel: React.FC = () => {
                         <span className="text-amber-400 font-bold">{topsis}</span>
                       </span>
                     </td>
-                    <td className="p-2 font-bold text-white">{sig.symbol}</td>
+                    <td className="p-2">
+                      <span className="block font-bold text-white">{sig.symbol}</span>
+                      <span className={`mt-0.5 inline-flex rounded px-1.5 py-0.5 text-[9px] font-semibold ${
+                        sig.producer?.toLowerCase().startsWith("sigmalui")
+                          ? "border border-violet-500/30 bg-violet-500/10 text-violet-300"
+                          : "border border-slate-700 bg-slate-800/70 text-slate-400"
+                      }`}>
+                        {producerLabel(sig.producer)}
+                      </span>
+                    </td>
                     <td className="p-2">
                       <span
                         className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded font-bold text-[10px] ${
@@ -371,6 +403,55 @@ export const SignalPriorityQueuePanel: React.FC = () => {
                         <SendHorizontal className="h-3 w-3" />
                         {dispatchingId === sig.id ? "Dispatching…" : "Execute"}
                       </button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {recentSignals.map((sig) => {
+                const isLong =
+                  sig.side.toUpperCase() === "LONG" || sig.side.toUpperCase() === "BUY";
+                const failed =
+                  sig.status.includes("FAILED") || sig.status.includes("BLOCKED") || sig.status.includes("EXCEEDED");
+                return (
+                  <tr key={`recent-${sig.id}`} className="bg-slate-950/40 text-slate-400 hover:bg-slate-900/40 transition-colors">
+                    <td className="p-2 font-mono text-slate-600">—</td>
+                    <td className="p-2">
+                      <span className="block font-semibold text-slate-300">{sig.symbol}</span>
+                      <span className="mt-0.5 inline-flex rounded border border-violet-500/20 bg-violet-500/5 px-1.5 py-0.5 text-[9px] font-semibold text-violet-300/70">
+                        {producerLabel(sig.producer)}
+                      </span>
+                    </td>
+                    <td className="p-2">
+                      <span className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                        isLong
+                          ? "bg-emerald-500/5 text-emerald-400/70 border border-emerald-500/10"
+                          : "bg-rose-500/5 text-rose-400/70 border border-rose-500/10"
+                      }`}>
+                        {isLong ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                        {sig.side}
+                      </span>
+                    </td>
+                    <td className="p-2 font-mono text-[10px] text-slate-500">
+                      {sig.rejection_reason ? (
+                        <span title={sig.rejection_reason}>{sig.rejection_reason}</span>
+                      ) : (
+                        sig.target_strategy || "—"
+                      )}
+                    </td>
+                    <td className="p-2 font-mono font-semibold text-slate-400">
+                      {Number(sig.raw_score ?? 0).toFixed(1)}
+                    </td>
+                    <td className="p-2 text-right">
+                      <span className={cn(
+                        "inline-block rounded px-1.5 py-0.5 text-[9px] font-semibold",
+                        sig.status === "PROTECTED"
+                          ? "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                          : failed
+                            ? "border border-rose-500/30 bg-rose-500/10 text-rose-300"
+                            : "border border-amber-500/30 bg-amber-500/10 text-amber-300"
+                      )}>
+                        {sig.status.replace(/_/g, " ")}
+                      </span>
                     </td>
                   </tr>
                 );

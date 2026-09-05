@@ -181,7 +181,10 @@ def run_sigmalui_ingestion(poll_interval_sec: int = 30) -> None:
 
     api_url = os.getenv("SIGMALUI_API_URL", "http://host-gateway:3000")
     notional_usd = float(os.getenv("SIGMALUI_AUTO_DISPATCH_NOTIONAL", "25.0"))
-    auto_dispatch = os.getenv("SIGMALUI_AUTO_DISPATCH", "false").lower() in ("1", "true", "yes")
+    from src.trading.runtime_settings import auto_dispatch_enabled
+    # Read once here only for the startup log; the loop re-reads it every cycle so an
+    # operator toggling auto-execute takes effect without recreating this container.
+    auto_dispatch = auto_dispatch_enabled("SIGMALUI_AUTO_DISPATCH")
     min_score = float(os.getenv("SIGMALUI_MIN_SCORE", "60.0"))
     host_header = os.getenv("SIGMALUI_HOST_HEADER", "")
     node_name = os.getenv("SIGMALUI_NODE_NAME", os.getenv("APP_NAME", "Scaffs_Execution_Node"))
@@ -206,8 +209,13 @@ def run_sigmalui_ingestion(poll_interval_sec: int = 30) -> None:
     while True:
         cycle += 1
         try:
+            # Re-read per cycle: this is the operator's live auto/manual switch.
+            cycle_auto = auto_dispatch_enabled("SIGMALUI_AUTO_DISPATCH")
+            if cycle_auto != auto_dispatch:
+                logger.info("SigmaLui auto_dispatch changed %s -> %s", auto_dispatch, cycle_auto)
+                auto_dispatch = cycle_auto
             res = bridge.sync_and_enqueue_signals(
-                auto_dispatch=auto_dispatch,
+                auto_dispatch=cycle_auto,
                 notional_usd=notional_usd,
                 min_score=min_score,
             )

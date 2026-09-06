@@ -64,6 +64,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5899,
+      host: "0.0.0.0",
       // The production dashboard is reached through the VPS TLS SNI proxy.
       // Keep Vite's DNS-rebinding protection enabled, with only this hostname
       // admitted instead of the unsafe `allowedHosts: true` escape hatch.

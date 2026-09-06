@@ -58,7 +58,7 @@ check_flag() {
 check_flag "ENABLE_LIVE_TRADING" "false"
 check_flag "ALLOW_AUTO_EXECUTION" "false"
 check_flag "REQUIRE_MANUAL_APPROVAL" "true"
-check_flag "NEW_ENTRIES_ENABLED" "false"
+check_flag "NEW_ENTRIES_ENABLED" "true"
 
 # 4. Build & Up
 echo "==> 4. Building Docker containers..."

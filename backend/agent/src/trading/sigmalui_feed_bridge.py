@@ -1,6 +1,7 @@
 """SigmaLui Soul Giver Live Feed Bridge for Scaffs.
 
-Polls the SigmaLui /api/soul/signals endpoint, ingests high-conviction
+Polls the SigmaLui premium signal-port endpoint (with legacy Soul API
+fallbacks), ingests high-conviction
 directional directives into the Scaffs Signal Priority Queue, validates
 quality gates, and optionally dispatches them to the configured strategy.
 """
@@ -11,6 +12,7 @@ import json
 import logging
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -82,6 +84,14 @@ class SigmaluiFeedBridge:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode())
 
+    def _url(self, endpoint: str, *, api_key_query: bool = False) -> str:
+        """Build an endpoint URL without ever placing credentials in logs."""
+        url = f"{self.api_url}{endpoint}"
+        if api_key_query and self.api_key:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}{urllib.parse.urlencode({'apiKey': self.api_key})}"
+        return url
+
     def register_node(self) -> Optional[Dict[str, Any]]:
         """Register this Scaffs node in the SigmaLui performance mesh."""
         if self._node_registered:
@@ -104,10 +114,14 @@ class SigmaluiFeedBridge:
     def share_outcome(self, outcome: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Share a trade execution outcome back to SigmaLui for reputation scoring."""
         payload = {
+            "apiKey": self.api_key,
+            "appName": self.node_name,
             "nodeId": outcome.get("node_id", self.node_name),
             "nodeIdentity": self.node_name,
             "signalId": outcome.get("signal_id", ""),
             "asset": outcome.get("asset", ""),
+            "status": outcome.get("status", "CLOSED"),
+            "slippageBps": outcome.get("slippage_bps", outcome.get("slippage", 0.0)),
             "futuresPair": outcome.get("futures_pair", ""),
             "direction": outcome.get("direction", ""),
             "entryPrice": outcome.get("entry_price", 0.0),
@@ -118,32 +132,47 @@ class SigmaluiFeedBridge:
             "wasProfitable": outcome.get("was_profitable", outcome.get("pnl_pct", 0.0) > 0),
         }
         try:
+            # The premium port owns the dashboard scorecard. Keep the legacy
+            # endpoint as a compatibility fallback for older SigmaLui nodes.
+            try:
+                return self._post_json("/api/port/v1/report-trade", payload)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    raise
             return self._post_json("/api/soul/share-outcome", payload)
         except Exception as e:
             logger.warning("SigmaLui outcome share failed: %s", e)
             return None
 
     def fetch_latest_sigmalui_signals(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Fetch latest emitted signals from the SigmaLui Soul API."""
-        for endpoint in ("/api/soul/signals", "/api/soul/suck-signals"):
-            url = f"{self.api_url}{endpoint}"
+        """Fetch the latest premium signals, with legacy API fallbacks."""
+        endpoints = (
+            ("/api/port/v1/suck-signals", True),
+            ("/api/soul/signals", False),
+            ("/api/soul/suck-signals", False),
+        )
+        for endpoint, key_in_query in endpoints:
+            url = self._url(endpoint, api_key_query=key_in_query)
             try:
                 req = urllib.request.Request(url, headers=self._request_headers())
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     data = json.loads(resp.read().decode())
                     signals = data.get("signals", [])
+                    if not isinstance(signals, list):
+                        logger.warning("SigmaLui endpoint returned an invalid signals payload")
+                        return []
                     return signals[:limit]
             except urllib.error.HTTPError as e:
                 if e.code == 404:
-                    logger.debug("SigmaLui endpoint not found: %s", url)
+                    logger.debug("SigmaLui endpoint not found: %s", endpoint)
                     continue
-                logger.warning("SigmaLui API returned %s for %s: %s", e.code, url, e.reason)
+                logger.warning("SigmaLui API returned %s for %s: %s", e.code, endpoint, e.reason)
                 return []
             except urllib.error.URLError as e:
-                logger.warning("Could not reach SigmaLui API at %s: %s", url, e.reason)
+                logger.warning("Could not reach SigmaLui API endpoint %s: %s", endpoint, e.reason)
                 return []
             except Exception as e:
-                logger.warning("SigmaLui fetch error at %s: %s", url, e)
+                logger.warning("SigmaLui fetch error at %s: %s", endpoint, e)
                 return []
         logger.warning("No SigmaLui signal endpoint found at %s", self.api_url)
         return []

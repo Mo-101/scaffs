@@ -61,7 +61,7 @@ check_flag() {
 check_flag "ENABLE_LIVE_TRADING" "false"
 check_flag "ALLOW_AUTO_EXECUTION" "false"
 check_flag "REQUIRE_MANUAL_APPROVAL" "true"
-check_flag "NEW_ENTRIES_ENABLED" "false"
+check_flag "NEW_ENTRIES_ENABLED" "true"
 
 # Resolve port configuration (default to 8899 on sovereign VPS)
 API_PORT=$(grep -E "^API_HOST_PORT=" .env | cut -d'=' -f2- | tr -d '"' | tr -d "'" || echo "8899")

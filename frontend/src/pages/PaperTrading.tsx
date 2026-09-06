@@ -1826,7 +1826,7 @@ export function PaperTrading() {
         </div>
       </div>
 
-      {/* Idim Ikang Priority Queue & Strategy Router Live Monitor */}
+      {/* Multi-source Priority Queue & Strategy Router Live Monitor */}
       <div className="mb-6">
         <SignalPriorityQueuePanel />
       </div>

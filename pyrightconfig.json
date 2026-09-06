@@ -4,10 +4,11 @@
     "backend/agent/tests"
   ],
   "extraPaths": [
-    "backend/agent/src"
+    "backend/agent/src",
+    "backend/agent"
   ],
-  "venvPath": "/home/idona",
-  "venv": ".scaffs-venv",
+  "venvPath": "backend/agent",
+  "venv": ".venv",
   "pythonPlatform": "Linux",
   "pythonVersion": "3.12",
   "typeCheckingMode": "basic",

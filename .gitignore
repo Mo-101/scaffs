@@ -71,3 +71,12 @@ backend/agent/paper_sessions/protection_reconcile/
 # Credential dumps — never commit raw secrets
 MCP.txt
 **/MCP.txt
+
+# Development scratch & temporary scripts
+.claude/
+.vibe-dev/
+scratch/
+tsc*.txt
+*.bak*
+scripts/_tmp_*
+backend/agent/paper_sessions_reconstructed/

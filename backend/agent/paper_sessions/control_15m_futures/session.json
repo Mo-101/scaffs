@@ -35,7 +35,7 @@
     "fixed_margin_per_trade": 0.0,
     "portfolio_leverage": false
   },
-  "accounting_error": null,
+  "accounting_error": -1.8189894035458565e-12,
   "accounting_error_kind": null,
   "accounting_position_differences": {},
   "accounting_stale_mark_symbols": []

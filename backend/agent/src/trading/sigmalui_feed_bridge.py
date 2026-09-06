@@ -332,8 +332,16 @@ class SigmaluiFeedBridge:
                     # Stale Gate: signals older than 600s TTL enter as EXPIRED/BACKFILL, never PENDING
                     is_stale = age_sec > 600.0
 
+                    raw_funding = sig.get("fundingRate")
+                    if raw_funding is None and isinstance(sig.get("criteriaVector"), dict):
+                        raw_funding = sig["criteriaVector"].get("fundingRate")
+                    funding_val = float(raw_funding or 0.0)
+
+                    regime_val = str(sig.get("marketRegime") or sig.get("regime") or "TRENDING").upper()
+                    crit_vec = sig.get("criteriaVector") if isinstance(sig.get("criteriaVector"), dict) else {}
+
                     crit = {
-                        "regime": sig.get("marketRegime") or sig.get("regime"),
+                        "regime": regime_val,
                         "signal_family": "sigmalui",
                         "entry": entry_px,
                         "stop_loss": sl_val,
@@ -341,6 +349,10 @@ class SigmaluiFeedBridge:
                         "topsis_score": sig.get("topsisScore"),
                         "confluence_reason": sig.get("confluenceReason") or sig.get("explanation"),
                         "soul_directive": sig.get("soulDirective"),
+                        "funding_rate": funding_val,
+                        "is_funding": abs(funding_val) > 0.0005,
+                        "adx14": float(crit_vec.get("adx14", 18.0 if regime_val in ("RANGING", "SIDEWAYS") else 32.0)),
+                        "volatility": float(crit_vec.get("volatility", 1.0)),
                         "ingestion_mode": "BACKFILL" if is_stale else "LIVE",
                         "backfilled": is_stale,
                     }

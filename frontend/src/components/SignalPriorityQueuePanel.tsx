@@ -203,11 +203,24 @@ export const SignalPriorityQueuePanel: React.FC = () => {
   };
 
   const canonicalId = (s: QueuedSignal) =>
-    (s.criteria_vector?.canonical_id as string | undefined) ?? s.target_strategy;
+    (s.criteria_vector?.canonical_id as string | undefined) ??
+    (s.criteria_vector?.canonical_strategy_id as string | undefined) ??
+    s.target_strategy;
 
-  const rebalanceCount = pendingSignals.filter((s) => canonicalId(s) === "periodic_equal_weight_rebalance").length;
-  const gridCount = pendingSignals.filter((s) => canonicalId(s).startsWith("bounded_grid_v1")).length;
-  const gloryCount = pendingSignals.filter((s) => canonicalId(s) === "funding_rate_zscore").length;
+  const rebalanceCount = pendingSignals.filter((s) => {
+    const cid = (canonicalId(s) || "").toLowerCase();
+    return cid.includes("rebalance");
+  }).length;
+
+  const gridCount = pendingSignals.filter((s) => {
+    const cid = (canonicalId(s) || "").toLowerCase();
+    return cid.includes("grid");
+  }).length;
+
+  const gloryCount = pendingSignals.filter((s) => {
+    const cid = (canonicalId(s) || "").toLowerCase();
+    return cid.includes("glory") || cid.includes("funding");
+  }).length;
 
   return (
     <div className="rounded-xl border border-amber-500/20 bg-slate-950/80 p-4 shadow-xl backdrop-blur-md">
